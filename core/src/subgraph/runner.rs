@@ -2,12 +2,11 @@ use crate::subgraph::context::IndexingContext;
 use crate::subgraph::error::BlockProcessingError;
 use crate::subgraph::inputs::IndexingInputs;
 use crate::subgraph::metrics::SubgraphInstanceMetrics;
+use crate::subgraph::stream::new_block_stream;
 use crate::subgraph::SubgraphInstance;
 use atomic_refcell::AtomicRefCell;
 use fail::fail_point;
-use graph::blockchain::block_stream::{
-    BlockStream, BlockStreamEvent, BlockWithTriggers, BufferedBlockStream,
-};
+use graph::blockchain::block_stream::{BlockStreamEvent, BlockWithTriggers};
 use graph::blockchain::{Block, Blockchain, DataSource, TriggerFilter as _, TriggersAdapter};
 use graph::components::{
     store::{ModificationsAndCache, SubgraphFork},
@@ -26,10 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MINUTE: Duration = Duration::from_secs(60);
-const SKIP_PTR_UPDATES_THRESHOLD: Duration = Duration::from_secs(60 * 5);
 
-const BUFFERED_BLOCK_STREAM_SIZE: usize = 100;
-const BUFFERED_FIREHOSE_STREAM_SIZE: usize = 1;
+const SKIP_PTR_UPDATES_THRESHOLD: Duration = Duration::from_secs(60 * 5);
 
 lazy_static! {
     // Keep deterministic errors non-fatal even if the subgraph is pending.
@@ -44,46 +41,6 @@ lazy_static! {
             .parse::<u64>()
             .map(Duration::from_secs)
             .expect("invalid GRAPH_SUBGRAPH_ERROR_RETRY_CEIL_SECS");
-}
-
-async fn new_block_stream<C: Blockchain>(
-    inputs: Arc<IndexingInputs<C>>,
-    filter: C::TriggerFilter,
-) -> Result<Box<dyn BlockStream<C>>, Error> {
-    let chain = inputs.chain.cheap_clone();
-    let is_firehose = chain.is_firehose_supported();
-
-    let buffer_size = match is_firehose {
-        true => BUFFERED_FIREHOSE_STREAM_SIZE,
-        false => BUFFERED_BLOCK_STREAM_SIZE,
-    };
-
-    let current_ptr = inputs.store.block_ptr();
-
-    let block_stream = match is_firehose {
-        true => chain.new_firehose_block_stream(
-            inputs.deployment.clone(),
-            inputs.store.block_cursor(),
-            inputs.start_blocks.clone(),
-            current_ptr,
-            Arc::new(filter.clone()),
-            inputs.unified_api_version.clone(),
-            inputs.firehose_grpc_filters,
-        ),
-        false => chain.new_polling_block_stream(
-            inputs.deployment.clone(),
-            inputs.start_blocks.clone(),
-            current_ptr,
-            Arc::new(filter.clone()),
-            inputs.unified_api_version.clone(),
-        ),
-    }
-    .await?;
-
-    Ok(BufferedBlockStream::spawn_from_stream(
-        block_stream,
-        buffer_size,
-    ))
 }
 
 pub struct SubgraphRunner<C: Blockchain, T: RuntimeHostBuilder<C>> {
