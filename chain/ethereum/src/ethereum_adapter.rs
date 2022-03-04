@@ -1366,10 +1366,14 @@ pub(crate) async fn blocks_with_triggers(
                 filter.log.clone(),
             )
             .map_ok(|logs: Vec<Log>| {
-                logs.into_iter()
-                    .map(Arc::new)
-                    .map(EthereumTrigger::Log)
-                    .collect()
+                let mut res = vec![];
+                for log in logs.into_iter() {
+                    let receipt: TransactionReceipt = todo!();
+                    let arclog = Arc::new(log);
+                    let trig = EthereumTrigger::Log(arclog, receipt);
+                    res.push(trig)
+                }
+                res
             })
             .compat(),
         ))
@@ -1563,7 +1567,7 @@ pub(crate) fn parse_log_triggers(
                 .logs
                 .iter()
                 .filter(move |log| log_filter.matches(log))
-                .map(move |log| EthereumTrigger::Log(Arc::new(log.clone())))
+                .map(move |log| EthereumTrigger::Log(Arc::new(log.clone()), receipt.clone()))
         })
         .collect()
 }
