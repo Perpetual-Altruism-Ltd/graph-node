@@ -10,8 +10,13 @@
         "name": "Debug launch",
         "cargo": {
             "args": ["run",
-                "--package=graph-node --release -- --debug",
-                "--postgres-url postgresql://graph-node:let-me-in@localhost:5432/graph-node --ethereum-rpc dev:http://3.8.133.196:3232/ --ipfs 127.0.0.1:5001"
+                "--package=graph-node",
+                "--release",
+                "--",
+                "--debug",
+                "--postgres-url=postgresql://graph-node:let-me-in@localhost:5432/graph-node",
+                "--ethereum-rpc=dev:http://3.8.133.196:3232/",
+                "--ipfs=127.0.0.1:5001"
             ]
         },
         "program": "${cargo:program}",

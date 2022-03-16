@@ -1,0 +1,13 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "cargo",
+			"command": "",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"label": "Rust: cargo run - graph-node"
+		}
+	]
+}
