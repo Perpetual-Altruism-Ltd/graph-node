@@ -5,9 +5,21 @@ use futures03::Stream;
 use http::header::CONTENT_LENGTH;
 use http::Uri;
 use reqwest::multipart;
-use serde::Deserialize;
+use serde::{Deserialize,Serialize};
 use std::time::Duration;
 use std::{str::FromStr, sync::Arc};
+
+use std::env;
+use rust-s3;
+use futures::stream::TryStreamExt;
+use mongodb::{bson::doc, options::FindOptions};
+
+use rust-s3::bucket::Bucket;
+use rust-s3::creds::Credentials;
+use rust-s3::region::Region;
+use rust-s3::S3Error; // Honestly no idea if these are right- I thiiiiink these should be rust-s3 and there should just be rust-s3 (or s3, one of the two) in the cargo.toml might have to do "extern crate s3" somewhere.
+use std::str;
+
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -32,6 +44,24 @@ pub struct AddResponse {
 pub struct IpfsClient {
     base: Arc<Uri>,
     client: Arc<reqwest::Client>,
+    mongo: Arc<mongodb::Client>,
+    s3: Arc<Bucket>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FileModel{
+    pub fileId: String,
+    pub ipfsUrl: String,
+    pub s3Url: String,
+    pub fileType: String,
+}
+
+pub struct Storage {
+    name: String,
+    region: Region,
+    credentials: Credentials,
+    bucket: String,
+    location_supported: bool,
 }
 
 impl CheapClone for IpfsClient {
@@ -39,15 +69,34 @@ impl CheapClone for IpfsClient {
         IpfsClient {
             base: self.base.cheap_clone(),
             client: self.client.cheap_clone(),
+            mongo: self.mongo.clone(), // this should maybe be cheap_clone but i have no idea how that's implemented.
+            s3: self.s3.clone(),
         }
     }
 }
 
 impl IpfsClient {
     pub fn new(base: &str) -> Result<Self, Error> {
+
+        let aws = Storage {
+            name: "aws".into(),
+            region: (&env::var("AWS_REGION_NAME").unwrap()).parse()?,
+            credentials: Credentials::from_env_specific(
+                Some("AWS_ACCESS_KEY_ID"),
+                Some("AWS_SECRET_ACCESS_KEY"),
+                None,
+                None,
+            )?,
+                bucket: (&env::var("AWS_BUCKET_NAME").unwrap()).to_string(),
+        location_supported: true,
+        };
+        let bucket = Bucket::new(&backend.bucket, backend.region, backend.credentials)?;
+
         Ok(IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str(base)?),
+            mongo: Arc::new(Client::with_uri_str(&env::var("MONGO_LINK").unwrap())?), // NOTE: this means the MONGO_LINK environment variable has to be set.
+            s3: Arc::new(bucket), // No, I'm not sure this is the right way to do this.
         })
     }
 
@@ -55,6 +104,8 @@ impl IpfsClient {
         IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str("http://localhost:5001").unwrap()),
+            mongo: Arc::new(Client::with_uri_str("mongodb://localhost:27017")?),
+            s3: Arc::new(),
         }
     }
 
@@ -71,7 +122,21 @@ impl IpfsClient {
     }
 
     /// Download the entire contents.
-    pub async fn cat_all(&self, cid: String, timeout: Duration) -> Result<Bytes, reqwest::Error> {
+    pub async fn cat_all(&self, cid: String, timeout: Duration) -> Result<Bytes, anyhow::Error> {
+
+        let database = self.client.database("");//TODO: FILL THESE OUT *should probably read from env
+        let collection = database.collection::<FileModel>("");
+
+        let mongoRes = collection.find_one(doc!{"ipfsUrl":&cid}).await?; // Might just be cid not &cid ???? haven't tried to compile yet. also don't know if this is the correct way to get the object/what.
+
+        //todo: figure out if this is right.
+        let (data, code) = self.s3.get_object(mongoRes.s3Url).await?;
+        if(code==200){
+            return data &(str::from_utf8(&data)?).to_bytes();//I don't this this is right, but. no idea.
+        }
+
+
+        //so really this should be last case~ I'll just leave it here I guess? so if it doesn't return already, then this runs. which shouuuld be fine. Eventually I should rewrite to use the ipfs-crate.
         self.call(self.url("cat", cid), None, Some(timeout))
             .await?
             .bytes()
