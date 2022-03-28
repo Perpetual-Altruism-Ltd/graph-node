@@ -5,7 +5,7 @@ use futures03::Stream;
 use http::header::CONTENT_LENGTH;
 use http::Uri;
 use reqwest::multipart;
-use serde::Deserialize;
+use serde::{Deserialize,Serialize};
 use std::time::Duration;
 use std::{str::FromStr, sync::Arc};
 
