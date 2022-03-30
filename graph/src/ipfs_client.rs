@@ -12,7 +12,7 @@ use std::{str::FromStr, sync::Arc};
 use std::env;
 use s3;
 //use futures::stream::TryStreamExt;
-use mongodb::{bson::doc, options::FindOptions};
+use mongodb::{bson::doc};
 
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
@@ -137,23 +137,51 @@ impl IpfsClient {
     /// Download the entire contents.
     pub async fn cat_all(&self, cid: String, timeout: Duration) -> Result<Bytes, anyhow::Error> {
 
-        let database = self.client.database("");//TODO: FILL THESE OUT *should probably read from env
-        let collection = database.collection::<FileModel>("");
+        let database = self.mongo.database(&env::var("MONGO_DATABASE").unwrap());//TODO: FILL THESE OUT *should probably read from env
+        let collection = database.collection::<FileModel>(&env::var("MONGO_COLLECTION").unwrap());
 
-        let mongoRes = collection.find_one(doc!{"ipfsUrl":&cid}).await?; // Might just be cid not &cid ???? haven't tried to compile yet. also don't know if this is the correct way to get the object/what.
+        let filter = doc!{"ipfsUrl":&cid};
+
+        let mongoRes = collection.find_one(filter,None).await;
+        let fil = match mongoRes{
+            Ok(x)=>x,
+            Err(E)=> {
+                return Ok(self.call(self.url("cat", cid), None, Some(timeout))
+                    .await?
+                    .bytes()
+                    .await?)
+            },
+        };
+        return match fil {
+            Some(x)=> {
+                let (data, code) = self.s3.get_object(x.s3Url).await?;
+                let ret;
+                if code == 200 {
+                    ret =Ok(bytes::Bytes::from(data));
+                }
+                else{
+                    ret = Ok(self.call(self.url("cat", cid), None, Some(timeout))
+                        .await?
+                        .bytes()
+                        .await?)
+                }
+                ret
+
+            }
+            None => {
+                Ok(self.call(self.url("cat", cid), None, Some(timeout))
+                    .await?
+                    .bytes()
+                    .await?)
+            }
+        };
 
         //todo: figure out if this is right.
-        let (data, code) = self.s3.get_object(mongoRes.s3Url).await?;
-        if code==200 {
-            return Ok(bytes::Bytes::from(data));//I don't think this is right, but. no idea.
-        }
+
 
 
         //so really this should be last case~ I'll just leave it here I guess? so if it doesn't return already, then this runs. which shouuuld be fine. Eventually I should rewrite to use the ipfs-crate.
-        Ok(self.call(self.url("cat", cid), None, Some(timeout))
-            .await?
-            .bytes()
-            .await?)
+
     }
 
     pub async fn cat(
