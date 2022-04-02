@@ -70,17 +70,25 @@ impl IpfsClient {
     pub fn localhost() -> Self {
         let aws = Storage {
             name: "aws".into(),
-            region: (&env::var("AWS_REGION_NAME").unwrap()).parse()?,
+            region: (&env::var("AWS_REGION_NAME").unwrap()).parse().unwrap(),
             credentials: Credentials::from_env_specific(
                 Some("AWS_ACCESS_KEY_ID"),
                 Some("AWS_SECRET_ACCESS_KEY"),
                 None,
                 None,
-            )?,
+            ).unwrap(),
             bucket: (&env::var("AWS_BUCKET_NAME").unwrap()).to_string(),
             location_supported: true,
         };
-        let bucket = Bucket::new(&aws.bucket, aws.region, aws.credentials)?;
+        let bucket = Bucket::new(&aws.bucket, aws.region, aws.credentials).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let res = rt.block_on(async { mongodb::Client::with_uri_str("mongodb://localhost:27017").await.unwrap() });
+
         IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str("http://localhost:5001").unwrap()),
@@ -112,7 +120,7 @@ impl IpfsClient {
         self.call(self.url("cat", cid), None, Some(timeout))
             .await?
             .bytes()
-            .await?)
+            .await
     }
 
     pub async fn cat(
