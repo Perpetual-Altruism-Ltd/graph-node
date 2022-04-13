@@ -5,21 +5,13 @@ use futures03::Stream;
 use http::header::CONTENT_LENGTH;
 use http::Uri;
 use reqwest::multipart;
-use serde::{Deserialize,Serialize};
+use serde::{Deserialize};
 use std::time::Duration;
 use std::{str::FromStr, sync::Arc};
 
+//use cid;
+//use cid::multihash::MultihashDigest;
 use std::env;
-use s3;
-//use futures::stream::TryStreamExt;
-use mongodb::{bson::doc};
-
-use s3::bucket::Bucket;
-use s3::creds::Credentials;
-use s3::region::Region;
-//use s3::S3Error; // Honestly no idea if these are right- I thiiiiink these should be rust-s3 and there should just be rust-s3 (or s3, one of the two) in the cargo.toml might have to do "extern crate s3" somewhere.
-use std::str;
-
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -44,26 +36,7 @@ pub struct AddResponse {
 pub struct IpfsClient {
     base: Arc<Uri>,
     client: Arc<reqwest::Client>,
-    mongo: mongodb::Client,
-    s3: Arc<Bucket>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[allow(non_snake_case)]
-pub struct FileModel{
-    pub fileId: String,
-    pub ipfsUrl: String,
-    pub s3Url: String,
-    pub fileType: String,
-}
-
-#[allow(dead_code)]
-pub struct Storage {
-    name: String,
-    region: Region,
-    credentials: Credentials,
-    bucket: String,
-    location_supported: bool,
+    tolkien_url: String,
 }
 
 impl CheapClone for IpfsClient {
@@ -71,8 +44,9 @@ impl CheapClone for IpfsClient {
         IpfsClient {
             base: self.base.cheap_clone(),
             client: self.client.cheap_clone(),
-            mongo: self.mongo.clone(), // this should maybe be cheap_clone but i have no idea how that's implemented.
-            s3: self.s3.clone(),
+            tolkien_url: self.tolkien_url.clone(),
+            //mongo: self.mongo.clone(),
+            //s3: self.s3.clone(),
         }
     }
 }
@@ -80,62 +54,22 @@ impl CheapClone for IpfsClient {
 impl IpfsClient {
     pub fn new(base: &str) -> Result<Self, Error> {
 
-        let aws = Storage {
-            name: "aws".into(),
-            region: (&env::var("AWS_REGION_NAME").unwrap()).parse()?,
-            credentials: Credentials::from_env_specific(
-                Some("AWS_ACCESS_KEY_ID"),
-                Some("AWS_SECRET_ACCESS_KEY"),
-                None,
-                None,
-            )?,
-                bucket: (&env::var("AWS_BUCKET_NAME").unwrap()).to_string(),
-        location_supported: true,
-        };
-        let bucket = Bucket::new(&aws.bucket, aws.region, aws.credentials)?;
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let res = rt.block_on(async { mongodb::Client::with_uri_str(&env::var("MONGO_LINK").unwrap()).await.unwrap() });
-
         Ok(IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str(base)?),
-            mongo: res, // NOTE: this means the MONGO_LINK environment variable has to be set.
-            s3: Arc::new(bucket), // No, I'm not sure this is the right way to do this.
+            tolkien_url: env::var("TOLKIEN_URL")?
         })
     }
 
     pub fn localhost() -> Self {
-        let aws = Storage {
-            name: "aws".into(),
-            region: (&env::var("AWS_REGION_NAME").unwrap()).parse().unwrap(),
-            credentials: Credentials::from_env_specific(
-                Some("AWS_ACCESS_KEY_ID"),
-                Some("AWS_SECRET_ACCESS_KEY"),
-                None,
-                None,
-            ).unwrap(),
-            bucket: (&env::var("AWS_BUCKET_NAME").unwrap()).to_string(),
-            location_supported: true,
-        };
-        let bucket = Bucket::new(&aws.bucket, aws.region, aws.credentials).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let res = rt.block_on(async { mongodb::Client::with_uri_str("mongodb://localhost:27017").await.unwrap() });
 
         IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str("http://localhost:5001").unwrap()),
-            mongo: res,
-            s3: Arc::new(bucket),
+            tolkien_url: match env::var("TOLKIEN_URL"){
+                Ok(x) => {x}
+                Err(_) => {String::from("http://127.0.0.1:30000")}
+            },
         }
     }
 
@@ -151,42 +85,52 @@ impl IpfsClient {
             .await
     }
 
-    //Download contents from s3 cache, throw if unable to locate contents
-    pub async fn s3_cat(&self, cid: &String) -> Result<Bytes,anyhow::Error> {
-        let database = self.mongo.database(&env::var("MONGO_DATABASE").unwrap());//TODO: FILL THESE OUT *should probably read from env
-        let collection = database.collection::<FileModel>(&env::var("MONGO_COLLECTION").unwrap());
-
-        let filter = doc!{"ipfsUrl":&cid};
-
-        let mongo_res = collection.find_one(filter,None).await;
-        let fil = match mongo_res{
-            Ok(x)=>x,
-            Err(_)=> {
-                return Err(anyhow::anyhow!("Mongo Failed"));
-            },
-        };
-        return match fil{
-            Some(x)=> {
-                let (data, code) = self.s3.get_object(x.s3Url).await?;
-                let ret;
-                if code == 200 {
-                    ret =Ok(bytes::Bytes::from(data));
-                }
-                else{
-                    ret =Err(anyhow::anyhow!("s3 failed"));
-                }
-                ret
-            }
-            None => {Err(anyhow::anyhow!("No record in Mongo"))}
+    pub async fn tolkien_call(&self, c_id: &String, timeout: Option<Duration>) -> Result<reqwest::Response,reqwest::Error> {
+        let mut a =self.client.get(format!("{}{}{}",self.tolkien_url,"/api/ipfs/",c_id));
+        if let Some(x) = timeout {
+            a = a.timeout(x);
         }
+        let b= a.send().await?.error_for_status()?;
+        return Ok(b);
+    }
 
+    //Queries Tolkien via https
+    pub async fn tolkien_cat(&self, c_id: &String, timeout: Duration) -> Result<Bytes,anyhow::Error> {
+        let res = self.tolkien_call(c_id,Some(timeout,)).await;
+        let res_string = match res{
+            Ok(x)=>{
+                x.text().await?
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!("Failed to get "));
+            }
+        };
 
+        /*let ipfs_cid = cid::CidGeneric::<64>::from_str(c_id)?;
+
+        let mh = ipfs_cid.hash();
+
+        let b = cid::multihash::Code::try_from(mh.code());
+
+        let d = match b{
+            Ok(c) => {c},
+            Err(_) => {return Err(anyhow::anyhow!("Failed to parse hash's code"));}
+        };
+
+        let digest = d.digest(res_string.as_bytes()); //no idea why clion isn't showing up the typing here?
+
+        return if digest.eq(mh) {
+            Ok(Bytes::from(res_string))
+        }
+        else{
+            Err(anyhow::anyhow!("Hashes do not match."))
+        }*/
+        return Ok(Bytes::from(res_string));
     }
 
     /// Download the entire contents.
     pub async fn cat_all(&self, cid: String, timeout: Duration) -> Result<Bytes, reqwest::Error> {
-
-        return match self.s3_cat(&cid).await{
+        return match self.tolkien_cat(&cid,timeout.clone()).await{
             Ok(x)=>{
                 Ok(x)
             }
@@ -197,13 +141,6 @@ impl IpfsClient {
                 .await?)
             }
         }
-
-        //todo: figure out if this is right.
-
-
-
-        //so really this should be last case~ I'll just leave it here I guess? so if it doesn't return already, then this runs. which shouuuld be fine. Eventually I should rewrite to use the ipfs-crate.
-
     }
 
     pub async fn cat(
