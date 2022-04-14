@@ -9,8 +9,8 @@ use serde::{Deserialize};
 use std::time::Duration;
 use std::{str::FromStr, sync::Arc};
 
-//use cid;
-//use cid::multihash::MultihashDigest;
+use cid;
+use cid::multihash::MultihashDigest;
 use std::env;
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +85,7 @@ impl IpfsClient {
             .await
     }
 
+    //actually send the tolkien http request - wrapped in a separate function so that error types are easier to deal with.
     pub async fn tolkien_call(&self, c_id: &String, timeout: Option<Duration>) -> Result<reqwest::Response,reqwest::Error> {
         let mut a =self.client.get(format!("{}{}{}",self.tolkien_url,"/api/ipfs/",c_id));
         if let Some(x) = timeout {
@@ -96,8 +97,26 @@ impl IpfsClient {
 
     //Queries Tolkien via https
     pub async fn tolkien_cat(&self, c_id: &String, timeout: Duration) -> Result<Bytes,anyhow::Error> {
-        let res = self.tolkien_call(c_id,Some(timeout,)).await;
-        let res_string = match res{
+
+        let ipfs_cid = cid::CidGeneric::<64>::from_str(c_id)?;
+
+        if ipfs_cid.codec() != 0x55 {
+            return Err(anyhow::anyhow!("Codec other than RAW not supported."));
+        }
+
+        let res = self.tolkien_call(c_id,Some(timeout,));
+        //^ this starts the call after that preliminary check - where most invalid should fail.
+
+        let mh = ipfs_cid.hash();
+
+        let code_result = cid::multihash::Code::try_from(mh.code());
+
+        let code_val = match code_result{
+            Ok(c) => {c},
+            Err(_) => {return Err(anyhow::anyhow!("Failed to parse hash's code"));}
+        };
+
+        let res_string = match res.await {
             Ok(x)=>{
                 x.text().await?
             }
@@ -106,26 +125,14 @@ impl IpfsClient {
             }
         };
 
-        /*let ipfs_cid = cid::CidGeneric::<64>::from_str(c_id)?;
-
-        let mh = ipfs_cid.hash();
-
-        let b = cid::multihash::Code::try_from(mh.code());
-
-        let d = match b{
-            Ok(c) => {c},
-            Err(_) => {return Err(anyhow::anyhow!("Failed to parse hash's code"));}
-        };
-
-        let digest = d.digest(res_string.as_bytes()); //no idea why clion isn't showing up the typing here?
+        let digest = code_val.digest(res_string.as_bytes()); //no idea why clion isn't showing up the typing here?
 
         return if digest.eq(mh) {
             Ok(Bytes::from(res_string))
         }
         else{
             Err(anyhow::anyhow!("Hashes do not match."))
-        }*/
-        return Ok(Bytes::from(res_string));
+        };
     }
 
     /// Download the entire contents.
