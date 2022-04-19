@@ -19,6 +19,7 @@ services:
       ipfs: 'ipfs:5001'
       ethereum: 'mainnet:http://3.8.133.196:3232/'
       GRAPH_LOG: info
+      TOLKIEN_URL: "http://localhost:127.0.0.1"
   ipfs:
     image: ipfs/go-ipfs:v0.4.23
     ports:
