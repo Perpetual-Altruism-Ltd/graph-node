@@ -62,7 +62,7 @@ pub trait SubgraphStore: Send + Sync + 'static {
         &self,
         name: SubgraphName,
         schema: &Schema,
-        deployment: SubgraphDeploymentEntity,
+        deployment: DeploymentCreate,
         node_id: NodeId,
         network: String,
         mode: SubgraphVersionSwitchingMode,
@@ -133,7 +133,7 @@ pub trait SubgraphStore: Send + Sync + 'static {
     /// that we would use to query or copy from; in particular, this will
     /// ignore any instances of this deployment that are in the process of
     /// being set up
-    fn least_block_ptr(&self, id: &DeploymentHash) -> Result<Option<BlockPtr>, StoreError>;
+    async fn least_block_ptr(&self, id: &DeploymentHash) -> Result<Option<BlockPtr>, StoreError>;
 
     /// Find the deployment locators for the subgraph with the given hash
     fn locators(&self, hash: &str) -> Result<Vec<DeploymentLocator>, StoreError>;
@@ -146,23 +146,23 @@ pub trait SubgraphStore: Send + Sync + 'static {
 #[async_trait]
 pub trait WritableStore: Send + Sync + 'static {
     /// Get a pointer to the most recently processed block in the subgraph.
-    fn block_ptr(&self) -> Option<BlockPtr>;
+    async fn block_ptr(&self) -> Option<BlockPtr>;
 
     /// Returns the Firehose `cursor` this deployment is currently at in the block stream of events. This
     /// is used when re-connecting a Firehose stream to start back exactly where we left off.
-    fn block_cursor(&self) -> Option<String>;
+    async fn block_cursor(&self) -> Option<String>;
 
     /// Deletes the current Firehose `cursor` this deployment is currently at.
-    fn delete_block_cursor(&self) -> Result<(), StoreError>;
+    async fn delete_block_cursor(&self) -> Result<(), StoreError>;
 
     /// Start an existing subgraph deployment.
-    fn start_subgraph_deployment(&self, logger: &Logger) -> Result<(), StoreError>;
+    async fn start_subgraph_deployment(&self, logger: &Logger) -> Result<(), StoreError>;
 
     /// Revert the entity changes from a single block atomically in the store, and update the
     /// subgraph block pointer to `block_ptr_to`.
     ///
     /// `block_ptr_to` must point to the parent block of the subgraph block pointer.
-    fn revert_block_operations(
+    async fn revert_block_operations(
         &self,
         block_ptr_to: BlockPtr,
         firehose_cursor: Option<&str>,
@@ -195,12 +195,12 @@ pub trait WritableStore: Send + Sync + 'static {
     /// subgraph block pointer to `block_ptr_to`, and update the firehose cursor to `firehose_cursor`
     ///
     /// `block_ptr_to` must point to a child block of the current subgraph block pointer.
-    fn transact_block_operations(
+    async fn transact_block_operations(
         &self,
         block_ptr_to: BlockPtr,
         firehose_cursor: Option<String>,
         mods: Vec<EntityModification>,
-        stopwatch: StopwatchMetrics,
+        stopwatch: &StopwatchMetrics,
         data_sources: Vec<StoredDynamicDataSource>,
         deterministic_errors: Vec<SubgraphError>,
     ) -> Result<(), StoreError>;
@@ -233,6 +233,9 @@ pub trait WritableStore: Send + Sync + 'static {
     async fn health(&self, id: &DeploymentHash) -> Result<SubgraphHealth, StoreError>;
 
     fn input_schema(&self) -> Arc<Schema>;
+
+    /// Wait for the background writer to finish processing its queue
+    async fn flush(&self) -> Result<(), StoreError>;
 }
 
 #[async_trait]
@@ -296,10 +299,10 @@ pub trait ChainStore: Send + Sync + 'static {
     /// to a block with a smaller or equal block number.
     ///
     /// The head block pointer will be None on initial set up.
-    fn chain_head_ptr(&self) -> Result<Option<BlockPtr>, Error>;
+    async fn chain_head_ptr(self: Arc<Self>) -> Result<Option<BlockPtr>, Error>;
 
     /// In-memory time cached version of `chain_head_ptr`.
-    fn cached_head_ptr(&self) -> Result<Option<BlockPtr>, Error>;
+    async fn cached_head_ptr(self: Arc<Self>) -> Result<Option<BlockPtr>, Error>;
 
     /// Get the current head block cursor for this chain.
     ///
@@ -324,8 +327,8 @@ pub trait ChainStore: Send + Sync + 'static {
     /// missing blocks in the chain store.
     ///
     /// Returns an error if the offset would reach past the genesis block.
-    fn ancestor_block(
-        &self,
+    async fn ancestor_block(
+        self: Arc<Self>,
         block_ptr: BlockPtr,
         offset: BlockNumber,
     ) -> Result<Option<serde_json::Value>, Error>;
@@ -358,7 +361,8 @@ pub trait ChainStore: Send + Sync + 'static {
 }
 
 pub trait EthereumCallCache: Send + Sync + 'static {
-    /// Cached return value.
+    /// Returns the return value of the provided Ethereum call, if present in
+    /// the cache.
     fn get_call(
         &self,
         contract_address: ethabi::Address,
@@ -366,7 +370,11 @@ pub trait EthereumCallCache: Send + Sync + 'static {
         block: BlockPtr,
     ) -> Result<Option<Vec<u8>>, Error>;
 
-    // Add entry to the cache.
+    /// Returns all cached calls for a given `block`. This method does *not*
+    /// update the last access time of the returned cached calls.
+    fn get_calls_in_block(&self, block: BlockPtr) -> Result<Vec<CachedEthereumCall>, Error>;
+
+    /// Stores the provided Ethereum call in the cache.
     fn set_call(
         &self,
         contract_address: ethabi::Address,
@@ -386,11 +394,11 @@ pub trait QueryStore: Send + Sync {
 
     async fn is_deployment_synced(&self) -> Result<bool, Error>;
 
-    fn block_ptr(&self) -> Result<Option<BlockPtr>, StoreError>;
+    async fn block_ptr(&self) -> Result<Option<BlockPtr>, StoreError>;
 
     fn block_number(&self, block_hash: H256) -> Result<Option<BlockNumber>, StoreError>;
 
-    fn wait_stats(&self) -> PoolWaitStats;
+    fn wait_stats(&self) -> Result<PoolWaitStats, StoreError>;
 
     /// If `block` is `None`, assumes the latest block.
     async fn has_non_fatal_errors(&self, block: Option<BlockNumber>) -> Result<bool, StoreError>;
@@ -404,7 +412,7 @@ pub trait QueryStore: Send + Sync {
     fn network_name(&self) -> &str;
 
     /// A permit should be acquired before starting query execution.
-    async fn query_permit(&self) -> tokio::sync::OwnedSemaphorePermit;
+    async fn query_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, StoreError>;
 }
 
 /// A view of the store that can provide information about the indexing status
@@ -412,7 +420,7 @@ pub trait QueryStore: Send + Sync {
 #[async_trait]
 pub trait StatusStore: Send + Sync + 'static {
     /// A permit should be acquired before starting query execution.
-    async fn query_permit(&self) -> tokio::sync::OwnedSemaphorePermit;
+    async fn query_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, StoreError>;
 
     fn status(&self, filter: status::Filter) -> Result<Vec<status::Info>, StoreError>;
 
@@ -446,4 +454,13 @@ pub trait StatusStore: Send + Sync + 'static {
         indexer: &Option<Address>,
         block: BlockPtr,
     ) -> Result<Option<[u8; 32]>, StoreError>;
+
+    /// Like `get_proof_of_indexing` but returns a Proof of Indexing signed by
+    /// address `0x00...0`, which allows it to be shared in public without
+    /// revealing the indexers _real_ Proof of Indexing.
+    async fn get_public_proof_of_indexing(
+        &self,
+        subgraph_id: &DeploymentHash,
+        block_number: BlockNumber,
+    ) -> Result<Option<(PartialBlockPtr, [u8; 32])>, StoreError>;
 }

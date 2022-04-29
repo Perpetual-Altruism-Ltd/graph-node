@@ -18,7 +18,7 @@ use graph::{
     prelude::{
         async_trait,
         ethabi::{Address, Contract, Event, Function, LogParam, ParamType, RawLog},
-        info, serde_json,
+        info, serde_json, warn,
         web3::types::{Log, Transaction, H256},
         BlockNumber, CheapClone, DataSourceTemplateInfo, Deserialize, EthereumCall,
         LightEthereumBlock, LightEthereumBlockExt, LinkResolver, Logger, TryStreamExt,
@@ -196,6 +196,20 @@ impl blockchain::DataSource<Chain> for DataSource {
         };
         if has_too_many_block_handlers {
             errors.push(anyhow!("data source has duplicated block handlers"));
+        }
+
+        // Validate that event handlers don't require receipts for API versions lower than 0.0.7
+        let api_version = self.api_version();
+        if api_version < semver::Version::new(0, 0, 7) {
+            for event_handler in &self.mapping.event_handlers {
+                if event_handler.receipt {
+                    errors.push(anyhow!(
+                        "data source has event handlers that require transaction receipts, but this \
+                         is only supported for apiVersion >= 0.0.7"
+                    ));
+                    break;
+                }
+            }
         }
 
         errors
@@ -433,7 +447,7 @@ impl DataSource {
         let trigger_address = match trigger {
             EthereumTrigger::Block(_, EthereumBlockTriggerType::WithCallTo(address)) => address,
             EthereumTrigger::Call(call) => &call.to,
-            EthereumTrigger::Log(log) => &log.address,
+            EthereumTrigger::Log(log, _) => &log.address,
 
             // Unfiltered block triggers match any data source address.
             EthereumTrigger::Block(_, EthereumBlockTriggerType::Every) => return true,
@@ -471,7 +485,7 @@ impl DataSource {
                     handler.handler,
                 )))
             }
-            EthereumTrigger::Log(log) => {
+            EthereumTrigger::Log(log, receipt) => {
                 let potential_handlers = self.handlers_for_log(log)?;
 
                 // Map event handlers to (event handler, event ABI) pairs; fail if there are
@@ -572,6 +586,7 @@ impl DataSource {
                         transaction: Arc::new(transaction),
                         log: log.cheap_clone(),
                         params,
+                        receipt: receipt.clone(),
                     },
                     event_handler.handler,
                     logging_extras,
@@ -602,15 +617,21 @@ impl DataSource {
                 // Take the input for the call, chop off the first 4 bytes, then call
                 // `function.decode_input` to get a vector of `Token`s. Match the `Token`s
                 // with the `Param`s in `function.inputs` to create a `Vec<LogParam>`.
-                let tokens = function_abi
-                    .decode_input(&call.input.0[4..])
-                    .with_context(|| {
+                let tokens = match function_abi.decode_input(&call.input.0[4..]).with_context(
+                    || {
                         format!(
                             "Generating function inputs for the call {:?} failed, raw input: {}",
                             &function_abi,
                             hex::encode(&call.input.0)
                         )
-                    })?;
+                    },
+                ) {
+                    Ok(val) => val,
+                    Err(err) => {
+                        warn!(logger, "Failed parsing inputs, skipping"; "error" => &err.to_string());
+                        return Ok(None);
+                    }
+                };
 
                 ensure!(
                     tokens.len() == function_abi.inputs.len(),
@@ -697,7 +718,7 @@ pub struct UnresolvedDataSource {
 impl blockchain::UnresolvedDataSource<Chain> for UnresolvedDataSource {
     async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<DataSource, anyhow::Error> {
         let UnresolvedDataSource {
@@ -784,7 +805,7 @@ pub type DataSourceTemplate = BaseDataSourceTemplate<Mapping>;
 impl blockchain::UnresolvedDataSourceTemplate<Chain> for UnresolvedDataSourceTemplate {
     async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<DataSourceTemplate, anyhow::Error> {
         let UnresolvedDataSourceTemplate {
@@ -880,7 +901,7 @@ impl Mapping {
 impl UnresolvedMapping {
     pub async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<Mapping, anyhow::Error> {
         let UnresolvedMapping {
@@ -946,7 +967,7 @@ pub struct MappingABI {
 impl UnresolvedMappingABI {
     pub async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<MappingABI, anyhow::Error> {
         info!(
@@ -990,6 +1011,8 @@ pub struct MappingEventHandler {
     pub event: String,
     pub topic0: Option<H256>,
     pub handler: String,
+    #[serde(default)]
+    pub receipt: bool,
 }
 
 impl MappingEventHandler {

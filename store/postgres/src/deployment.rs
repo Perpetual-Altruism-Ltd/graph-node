@@ -1,7 +1,10 @@
 //! Utilities for dealing with deployment metadata. Any connection passed
 //! into these methods must be for the shard that holds the actual
 //! deployment data and metadata
-use crate::detail::GraphNodeVersion;
+use crate::{
+    detail::GraphNodeVersion,
+    functions::{coalesce_binary, coalesce_numeric},
+};
 use diesel::{
     connection::SimpleConnection,
     dsl::{count, delete, insert_into, select, sql, update},
@@ -13,15 +16,18 @@ use diesel::{
     sql_query,
     sql_types::{Nullable, Text},
 };
-use graph::data::subgraph::{schema::SubgraphManifestEntity, SubgraphFeature};
+use graph::data::subgraph::schema::SubgraphError;
+use graph::data::subgraph::{
+    schema::{DeploymentCreate, SubgraphManifestEntity},
+    SubgraphFeature,
+};
 use graph::prelude::{
     anyhow, bigdecimal::ToPrimitive, hex, web3::types::H256, BigDecimal, BlockNumber, BlockPtr,
     DeploymentHash, DeploymentState, Schema, StoreError,
 };
-use graph::{data::subgraph::schema::SubgraphError, prelude::SubgraphDeploymentEntity};
-use stable_hash::crypto::SetHasher;
-use std::str::FromStr;
+use stable_hash_legacy::crypto::SetHasher;
 use std::{collections::BTreeSet, convert::TryFrom, ops::Bound};
+use std::{str::FromStr, sync::Arc};
 
 use crate::connection_pool::ForeignServer;
 use crate::{block_range::BLOCK_RANGE_COLUMN, primary::Site};
@@ -104,6 +110,7 @@ table! {
         features -> Array<Text>,
         schema -> Text,
         graph_node_version_id -> Nullable<Integer>,
+        use_bytea_prefix -> Bool,
     }
 }
 
@@ -213,13 +220,15 @@ pub fn debug_fork(
     }
 }
 
-pub fn schema(conn: &PgConnection, site: &Site) -> Result<Schema, StoreError> {
+pub fn schema(conn: &PgConnection, site: &Site) -> Result<(Schema, bool), StoreError> {
     use subgraph_manifest as sm;
-    let s: String = sm::table
-        .select(sm::schema)
+    let (s, use_bytea_prefix) = sm::table
+        .select((sm::schema, sm::use_bytea_prefix))
         .filter(sm::id.eq(site.id))
-        .first(conn)?;
-    Schema::parse(s.as_str(), site.deployment.clone()).map_err(StoreError::Unknown)
+        .first::<(String, bool)>(conn)?;
+    Schema::parse(s.as_str(), site.deployment.clone())
+        .map_err(StoreError::Unknown)
+        .map(|schema| (schema, use_bytea_prefix))
 }
 
 pub fn manifest_info(
@@ -372,11 +381,11 @@ pub fn forward_block_ptr(
 
 pub fn delete_subgraph_firehose_cursor(
     conn: &PgConnection,
-    id: &DeploymentHash,
+    site: Arc<Site>,
 ) -> Result<(), StoreError> {
     use subgraph_deployment as d;
 
-    update(d::table.filter(d::deployment.eq(id.as_str())))
+    update(d::table.filter(d::deployment.eq(site.deployment.as_str())))
         .set(d::firehose_cursor.eq::<Option<&str>>(None))
         .execute(conn)
         .map(|_| ())
@@ -385,12 +394,12 @@ pub fn delete_subgraph_firehose_cursor(
 
 pub fn get_subgraph_firehose_cursor(
     conn: &PgConnection,
-    deployment_hash: &DeploymentHash,
+    site: Arc<Site>,
 ) -> Result<Option<String>, StoreError> {
     use subgraph_deployment as d;
 
     let res = d::table
-        .filter(d::deployment.eq(deployment_hash.as_str()))
+        .filter(d::deployment.eq(site.deployment.as_str()))
         .select(d::firehose_cursor)
         .first::<Option<String>>(conn)
         .map_err(StoreError::from);
@@ -452,6 +461,35 @@ pub fn block_ptr(conn: &PgConnection, id: &DeploymentHash) -> Result<Option<Bloc
     let ptr = crate::detail::block(id.as_str(), "latest_ethereum_block", hash, number)?
         .map(|block| block.to_ptr());
     Ok(ptr)
+}
+
+/// Initialize the subgraph's block pointer. If the block pointer in
+/// `latest_ethereum_block` is set already, do nothing. If it is still
+/// `null`, set it to `earliest_ethereum_block`
+pub fn initialize_block_ptr(conn: &PgConnection, site: &Site) -> Result<(), StoreError> {
+    use subgraph_deployment as d;
+
+    let init_hash = coalesce_binary(
+        d::latest_ethereum_block_hash,
+        d::earliest_ethereum_block_hash,
+    );
+    let init_number = coalesce_numeric(
+        d::latest_ethereum_block_number,
+        d::earliest_ethereum_block_number,
+    );
+    // Avoid an unnecessary update by filtering for null block pointers
+    update(
+        d::table
+            .filter(d::id.eq(site.id))
+            .filter(d::latest_ethereum_block_hash.is_null()),
+    )
+    .set((
+        d::latest_ethereum_block_hash.eq(init_hash),
+        d::latest_ethereum_block_number.eq(init_number),
+    ))
+    .execute(conn)
+    .map(|_| ())
+    .map_err(|e| e.into())
 }
 
 fn convert_to_u32(number: Option<i32>, field: &str, subgraph: &str) -> Result<u32, StoreError> {
@@ -571,7 +609,9 @@ pub fn exists_and_synced(conn: &PgConnection, id: &str) -> Result<bool, StoreErr
 fn insert_subgraph_error(conn: &PgConnection, error: &SubgraphError) -> anyhow::Result<String> {
     use subgraph_error as e;
 
-    let error_id = hex::encode(&stable_hash::utils::stable_hash::<SetHasher, _>(&error));
+    let error_id = hex::encode(&stable_hash_legacy::utils::stable_hash::<SetHasher, _>(
+        &error,
+    ));
     let SubgraphError {
         subgraph_id,
         message,
@@ -651,18 +691,6 @@ pub(crate) fn has_non_fatal_errors(
         .get_result(conn),
     }
     .map_err(|e| e.into())
-}
-
-pub fn get_fatal_error_id(
-    conn: &PgConnection,
-    deployment_id: &DeploymentHash,
-) -> Result<Option<String>, StoreError> {
-    use subgraph_deployment as d;
-    d::table
-        .filter(d::deployment.eq(deployment_id.as_str()))
-        .select(d::fatal_error)
-        .get_result(conn)
-        .map_err(StoreError::from)
 }
 
 pub fn update_deployment_status(
@@ -863,7 +891,7 @@ pub fn drop_metadata(conn: &PgConnection, site: &Site) -> Result<(), StoreError>
 pub fn create_deployment(
     conn: &PgConnection,
     site: &Site,
-    deployment: SubgraphDeploymentEntity,
+    deployment: DeploymentCreate,
     exists: bool,
     replace: bool,
 ) -> Result<(), StoreError> {
@@ -881,7 +909,7 @@ pub fn create_deployment(
         }
     }
 
-    let SubgraphDeploymentEntity {
+    let DeploymentCreate {
         manifest:
             SubgraphManifestEntity {
                 spec_version,
@@ -890,33 +918,24 @@ pub fn create_deployment(
                 features,
                 schema,
             },
-        failed,
-        health: _,
-        synced,
-        fatal_error: _,
-        non_fatal_errors: _,
         earliest_block,
-        latest_block,
         graft_base,
         graft_block,
         debug_fork,
-        reorg_count: _,
-        current_reorg_depth: _,
-        max_reorg_depth: _,
     } = deployment;
 
     let deployment_values = (
         d::id.eq(site.id),
         d::deployment.eq(site.deployment.as_str()),
-        d::failed.eq(failed),
-        d::synced.eq(synced),
+        d::failed.eq(false),
+        d::synced.eq(false),
         d::health.eq(SubgraphHealth::Healthy),
         d::fatal_error.eq::<Option<String>>(None),
         d::non_fatal_errors.eq::<Vec<String>>(vec![]),
         d::earliest_ethereum_block_hash.eq(b(&earliest_block)),
         d::earliest_ethereum_block_number.eq(n(&earliest_block)),
-        d::latest_ethereum_block_hash.eq(b(&latest_block)),
-        d::latest_ethereum_block_number.eq(n(&latest_block)),
+        d::latest_ethereum_block_hash.eq(sql("null")),
+        d::latest_ethereum_block_number.eq(sql("null")),
         d::entity_count.eq(sql("0")),
         d::graft_base.eq(graft_base.as_ref().map(|s| s.as_str())),
         d::graft_block_hash.eq(b(&graft_block)),

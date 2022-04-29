@@ -1,23 +1,14 @@
 use anyhow::anyhow;
-use lazy_static::lazy_static;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
+use crate::blockchain::BlockPtr;
 use crate::components::store::{
     self as s, Entity, EntityKey, EntityOp, EntityOperation, EntityType,
 };
+use crate::prelude::ENV_VARS;
 use crate::util::lfu_cache::LfuCache;
-
-lazy_static! {
-    /// Size limit of the entity LFU cache, in bytes.
-    // Multiplied by 1000 because the env var is in KB.
-    pub static ref ENTITY_CACHE_SIZE: usize = 1000
-        * std::env::var("GRAPH_ENTITY_CACHE_SIZE")
-            .unwrap_or("10000".into())
-            .parse::<usize>()
-            .expect("invalid GRAPH_ENTITY_CACHE_SIZE");
-}
 
 /// A cache for entities from the store that provides the basic functionality
 /// needed for the store interactions in the host exports. This struct tracks
@@ -110,7 +101,8 @@ impl EntityCache {
     }
 
     pub fn get(&mut self, key: &EntityKey) -> Result<Option<Entity>, s::QueryExecutionError> {
-        // Get the current entity, apply any updates from `updates`, then from `handler_updates`.
+        // Get the current entity, apply any updates from `updates`, then
+        // from `handler_updates`.
         let mut entity = self.current.get_entity(&*self.store, key)?;
         if let Some(op) = self.updates.get(key).cloned() {
             entity = op.apply_to(entity)
@@ -240,6 +232,16 @@ impl EntityCache {
             .keys()
             .filter(|key| !self.current.contains_key(key));
 
+        // For immutable types, we assume that the subgraph is well-behaved,
+        // and all updated immutable entities are in fact new, and skip
+        // looking them up in the store. That ultimately always leads to an
+        // `Insert` modification for immutable entities; if the assumption
+        // is wrong and the store already has a version of the entity from a
+        // previous block, the attempt to insert will trigger a constraint
+        // violation in the database, ensuring correctness
+        let missing =
+            missing.filter(|key| !self.store.input_schema().is_immutable(&key.entity_type));
+
         let mut missing_by_subgraph: BTreeMap<_, BTreeMap<&EntityType, Vec<&str>>> =
             BTreeMap::new();
         for key in missing {
@@ -310,7 +312,7 @@ impl EntityCache {
                 mods.push(modification)
             }
         }
-        self.current.evict(*ENTITY_CACHE_SIZE);
+        self.current.evict(ENV_VARS.mappings.entity_cache_size);
 
         Ok(ModificationsAndCache {
             modifications: mods,
@@ -340,4 +342,21 @@ impl LfuCache<EntityKey, Option<Entity>> {
             Some(data) => Ok(data.to_owned()),
         }
     }
+}
+
+/// Represents an item retrieved from an
+/// [`EthereumCallCache`](super::EthereumCallCache) implementor.
+pub struct CachedEthereumCall {
+    /// The BLAKE3 hash that uniquely represents this cache item. The way this
+    /// hash is constructed is an implementation detail.
+    pub blake3_id: Vec<u8>,
+
+    /// Block details related to this Ethereum call.
+    pub block_ptr: BlockPtr,
+
+    /// The address to the called contract.
+    pub contract_address: ethabi::Address,
+
+    /// The encoded return value of this call.
+    pub return_value: Vec<u8>,
 }

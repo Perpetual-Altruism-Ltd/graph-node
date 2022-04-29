@@ -6,7 +6,9 @@ use thiserror::Error;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use super::{Block, BlockPtr, Blockchain};
-use crate::components::store::BlockNumber;
+use crate::anyhow::Result;
+use crate::components::store::{BlockNumber, DeploymentLocator};
+use crate::data::subgraph::UnifiedMappingApiVersion;
 use crate::firehose;
 use crate::{prelude::*, prometheus::labels};
 
@@ -80,11 +82,49 @@ pub trait BlockStream<C: Blockchain>:
 {
 }
 
+/// BlockStreamBuilder is an abstraction that would separate the logic for building streams from the blockchain trait
+#[async_trait]
+pub trait BlockStreamBuilder<C: Blockchain>: Send + Sync {
+    fn build_firehose(
+        &self,
+        chain: &C,
+        deployment: DeploymentLocator,
+        block_cursor: Option<String>,
+        start_blocks: Vec<BlockNumber>,
+        subgraph_current_block: Option<BlockPtr>,
+        filter: Arc<C::TriggerFilter>,
+        unified_api_version: UnifiedMappingApiVersion,
+    ) -> Result<Box<dyn BlockStream<C>>>;
+
+    async fn build_polling(
+        &self,
+        chain: Arc<C>,
+        deployment: DeploymentLocator,
+        start_blocks: Vec<BlockNumber>,
+        subgraph_current_block: Option<BlockPtr>,
+        filter: Arc<C::TriggerFilter>,
+        unified_api_version: UnifiedMappingApiVersion,
+    ) -> Result<Box<dyn BlockStream<C>>>;
+}
+
 pub type FirehoseCursor = Option<String>;
 
+#[derive(Debug)]
 pub struct BlockWithTriggers<C: Blockchain> {
     pub block: C::Block,
     pub trigger_data: Vec<C::TriggerData>,
+}
+
+impl<C: Blockchain> Clone for BlockWithTriggers<C>
+where
+    C::TriggerData: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            block: self.block.clone(),
+            trigger_data: self.trigger_data.clone(),
+        }
+    }
 }
 
 impl<C: Blockchain> BlockWithTriggers<C> {
@@ -116,8 +156,11 @@ pub trait TriggersAdapter<C: Blockchain>: Send + Sync {
     // by `ptr` from the local cache. An offset of 0 means the block itself,
     // an offset of 1 means the block's parent etc. If the block is not in
     // the local cache, return `None`
-    fn ancestor_block(&self, ptr: BlockPtr, offset: BlockNumber)
-        -> Result<Option<C::Block>, Error>;
+    async fn ancestor_block(
+        &self,
+        ptr: BlockPtr,
+        offset: BlockNumber,
+    ) -> Result<Option<C::Block>, Error>;
 
     // Returns a sequence of blocks in increasing order of block number.
     // Each block will include all of its triggers that match the given `filter`.
@@ -154,7 +197,7 @@ pub trait FirehoseMapper<C: Blockchain>: Send + Sync {
         &self,
         logger: &Logger,
         response: &firehose::Response,
-        adapter: &C::TriggersAdapter,
+        adapter: &Arc<dyn TriggersAdapter<C>>,
         filter: &C::TriggerFilter,
     ) -> Result<BlockStreamEvent<C>, FirehoseError>;
 
@@ -198,11 +241,24 @@ pub enum FirehoseError {
     UnknownError(#[from] anyhow::Error),
 }
 
+#[derive(Debug)]
 pub enum BlockStreamEvent<C: Blockchain> {
     // The payload is the block the subgraph should revert to, so it becomes the new subgraph head.
     Revert(BlockPtr, FirehoseCursor),
 
     ProcessBlock(BlockWithTriggers<C>, FirehoseCursor),
+}
+
+impl<C: Blockchain> Clone for BlockStreamEvent<C>
+where
+    C::TriggerData: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Self::Revert(arg0, arg1) => Self::Revert(arg0.clone(), arg1.clone()),
+            Self::ProcessBlock(arg0, arg1) => Self::ProcessBlock(arg0.clone(), arg1.clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -215,7 +271,7 @@ pub struct BlockStreamMetrics {
 
 impl BlockStreamMetrics {
     pub fn new(
-        registry: Arc<impl MetricsRegistry>,
+        registry: Arc<dyn MetricsRegistry>,
         deployment_id: &DeploymentHash,
         network: String,
         shard: String,

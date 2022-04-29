@@ -52,21 +52,51 @@ table! {
 pub struct Catalog {
     pub site: Arc<Site>,
     text_columns: HashMap<String, HashSet<String>>,
+    pub use_poi: bool,
+    /// Whether `bytea` columns are indexed with just a prefix (`true`) or
+    /// in their entirety. This influences both DDL generation and how
+    /// queries are generated
+    pub use_bytea_prefix: bool,
 }
 
 impl Catalog {
-    pub fn new(conn: &PgConnection, site: Arc<Site>) -> Result<Self, StoreError> {
+    /// Load the catalog for an existing subgraph
+    pub fn load(
+        conn: &PgConnection,
+        site: Arc<Site>,
+        use_bytea_prefix: bool,
+    ) -> Result<Self, StoreError> {
         let text_columns = get_text_columns(conn, &site.namespace)?;
-        Ok(Catalog { site, text_columns })
+        let use_poi = supports_proof_of_indexing(conn, &site.namespace)?;
+        Ok(Catalog {
+            site,
+            text_columns,
+            use_poi,
+            use_bytea_prefix,
+        })
+    }
+
+    /// Return a new catalog suitable for creating a new subgraph
+    pub fn for_creation(site: Arc<Site>) -> Self {
+        Catalog {
+            site,
+            text_columns: HashMap::default(),
+            // DDL generation creates a POI table
+            use_poi: true,
+            // DDL generation creates indexes for prefixes of bytes columns
+            use_bytea_prefix: true,
+        }
     }
 
     /// Make a catalog as if the given `schema` did not exist in the database
     /// yet. This function should only be used in situations where a database
     /// connection is definitely not available, such as in unit tests
-    pub fn make_empty(site: Arc<Site>) -> Result<Self, StoreError> {
+    pub fn for_tests(site: Arc<Site>) -> Result<Self, StoreError> {
         Ok(Catalog {
             site,
             text_columns: HashMap::default(),
+            use_poi: false,
+            use_bytea_prefix: true,
         })
     }
 

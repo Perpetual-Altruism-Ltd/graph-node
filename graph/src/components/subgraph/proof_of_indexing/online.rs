@@ -5,23 +5,15 @@
 use super::ProofOfIndexingEvent;
 use crate::{
     blockchain::BlockPtr,
-    prelude::{debug, BlockNumber, DeploymentHash, Logger},
+    prelude::{debug, BlockNumber, DeploymentHash, Logger, ENV_VARS},
 };
-use lazy_static::lazy_static;
-use stable_hash::crypto::{Blake3SeqNo, SetHasher};
-use stable_hash::prelude::*;
-use stable_hash::utils::AsBytes;
+use stable_hash_legacy::crypto::{Blake3SeqNo, SetHasher};
+use stable_hash_legacy::prelude::*;
+use stable_hash_legacy::utils::AsBytes;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt;
 use web3::types::Address;
-
-lazy_static! {
-    static ref LOG_EVENTS: bool = std::env::var("GRAPH_LOG_POI_EVENTS")
-        .unwrap_or_else(|_| "false".into())
-        .parse::<bool>()
-        .expect("invalid GRAPH_LOG_POI_EVENTS");
-}
 
 pub struct BlockEventStream {
     vec_length: u64,
@@ -107,7 +99,6 @@ impl BlockEventStream {
         self.handler_start = self.vec_length;
     }
 }
-
 #[derive(Default)]
 pub struct ProofOfIndexing {
     block_number: BlockNumber,
@@ -131,7 +122,9 @@ impl ProofOfIndexing {
             per_causality_region: HashMap::new(),
         }
     }
+}
 
+impl ProofOfIndexing {
     pub fn write_deterministic_error(&mut self, logger: &Logger, causality_region: &str) {
         let redacted_events = self.with_causality_region(causality_region, |entry| {
             entry.vec_length - entry.handler_start
@@ -150,7 +143,7 @@ impl ProofOfIndexing {
         causality_region: &str,
         event: &ProofOfIndexingEvent<'_>,
     ) {
-        if *LOG_EVENTS {
+        if ENV_VARS.log_poi_events {
             debug!(
                 logger,
                 "Proof of indexing event";
@@ -167,7 +160,7 @@ impl ProofOfIndexing {
     }
 
     // This is just here because the raw_entry API is not stabilized.
-    fn with_causality_region<F, T>(&mut self, causality_region: &str, f: F) -> T
+    pub fn with_causality_region<F, T>(&mut self, causality_region: &str, f: F) -> T
     where
         F: FnOnce(&mut BlockEventStream) -> T,
     {
