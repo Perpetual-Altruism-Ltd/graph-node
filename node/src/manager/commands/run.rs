@@ -1,26 +1,26 @@
 use std::collections::{BTreeMap, HashMap};
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{Config, ProviderDetails};
-use crate::manager::deployment::Deployment;
 use crate::manager::PanicSubscriptionManager;
 use crate::store_builder::StoreBuilder;
 use crate::MetricsContext;
-use ethereum::{EthereumNetworks, ProviderEthRpcMetrics};
+use ethereum::chain::{EthereumAdapterSelector, EthereumStreamBuilder};
+use ethereum::{EthereumNetworks, ProviderEthRpcMetrics, RuntimeAdapter as EthereumRuntimeAdapter};
 use futures::future::join_all;
 use futures::TryFutureExt;
-use graph::anyhow::{format_err, Error};
+use graph::anyhow::{bail, format_err, Error};
 use graph::blockchain::{BlockchainKind, BlockchainMap, ChainIdentifier};
 use graph::cheap_clone::CheapClone;
-use graph::components::store::BlockStore as _;
+use graph::components::store::{BlockStore as _, DeploymentLocator};
+use graph::env::EnvVars;
 use graph::firehose::{FirehoseEndpoint, FirehoseEndpoints, FirehoseNetworks};
 use graph::ipfs_client::IpfsClient;
 use graph::prelude::MetricsRegistry as MetricsRegistryTrait;
 use graph::prelude::{
     anyhow, tokio, BlockNumber, DeploymentHash, LoggerFactory, NodeId, SubgraphAssignmentProvider,
-    SubgraphName, SubgraphRegistrar, SubgraphStore, SubgraphVersionSwitchingMode,
+    SubgraphName, SubgraphRegistrar, SubgraphStore, SubgraphVersionSwitchingMode, ENV_VARS,
 };
 use graph::slog::{debug, error, info, o, Logger};
 use graph::util::security::SafeDisplay;
@@ -29,8 +29,16 @@ use graph_core::{
     LinkResolver, MetricsRegistry, SubgraphAssignmentProvider as IpfsSubgraphAssignmentProvider,
     SubgraphInstanceManager, SubgraphRegistrar as IpfsSubgraphRegistrar,
 };
-use lazy_static::lazy_static;
-use std::str::FromStr;
+use url::Url;
+
+fn locate(store: &dyn SubgraphStore, hash: &str) -> Result<DeploymentLocator, anyhow::Error> {
+    let mut locators = store.locators(&hash)?;
+    match locators.len() {
+        0 => bail!("could not find subgraph {hash} we just created"),
+        1 => Ok(locators.pop().unwrap()),
+        n => bail!("there are {n} subgraphs with hash {hash}"),
+    }
+}
 
 pub async fn run(
     logger: Logger,
@@ -56,7 +64,10 @@ pub async fn run(
 
     // Convert the clients into a link resolver. Since we want to get past
     // possible temporary DNS failures, make the resolver retry
-    let link_resolver = Arc::new(LinkResolver::from(ipfs_clients));
+    let link_resolver = Arc::new(LinkResolver::new(
+        ipfs_clients,
+        Arc::new(EnvVars::default()),
+    ));
 
     let eth_networks = create_ethereum_networks(logger.clone(), metrics_registry.clone(), &config)
         .await
@@ -66,7 +77,9 @@ pub async fn run(
             .await
             .expect("Failed to parse Firehose endpoints");
     let firehose_networks = firehose_networks_by_kind.get(&BlockchainKind::Ethereum);
-    let firehose_endpoints = firehose_networks.and_then(|v| v.networks.get(&network_name));
+    let firehose_endpoints = firehose_networks
+        .and_then(|v| v.networks.get(&network_name))
+        .map_or_else(|| FirehoseEndpoints::new(), |v| v.clone());
 
     let eth_adapters = match eth_networks.networks.get(&network_name) {
         Some(adapters) => adapters.clone(),
@@ -76,6 +89,8 @@ pub async fn run(
             ))
         }
     };
+
+    let eth_adapters2 = eth_adapters.clone();
 
     let (_, ethereum_idents) = connect_ethereum_networks(&logger, eth_networks).await;
     // let (near_networks, near_idents) = connect_firehose_networks::<NearFirehoseHeaderOnlyBlock>(
@@ -87,7 +102,6 @@ pub async fn run(
     // .await;
 
     let chain_head_update_listener = store_builder.chain_head_update_listener();
-    let primary_pool = store_builder.primary_pool();
     let network_identifiers = ethereum_idents.into_iter().collect();
     let network_store = store_builder.network_store(network_identifiers);
 
@@ -103,11 +117,23 @@ pub async fn run(
         node_id.clone(),
         metrics_registry.clone(),
         chain_store.cheap_clone(),
-        chain_store,
-        firehose_endpoints.map_or_else(|| FirehoseEndpoints::new(), |v| v.clone()),
-        eth_adapters,
+        chain_store.cheap_clone(),
+        firehose_endpoints.clone(),
+        eth_adapters.clone(),
         chain_head_update_listener,
-        *REORG_THRESHOLD,
+        Arc::new(EthereumStreamBuilder {}),
+        Arc::new(EthereumAdapterSelector::new(
+            logger_factory.clone(),
+            Arc::new(eth_adapters),
+            Arc::new(firehose_endpoints.clone()),
+            metrics_registry.clone(),
+            chain_store.cheap_clone(),
+        )),
+        Arc::new(EthereumRuntimeAdapter {
+            call_cache: chain_store.cheap_clone(),
+            eth_adapters: Arc::new(eth_adapters2),
+        }),
+        ethereum::ENV_VARS.reorg_threshold,
         // We assume the tested chain is always ingestible for now
         true,
     );
@@ -115,8 +141,7 @@ pub async fn run(
     let mut blockchain_map = BlockchainMap::new();
     blockchain_map.insert(network_name.clone(), Arc::new(chain));
 
-    let static_filters = env::var_os("EXPERIMENTAL_STATIC_FILTERS").is_some();
-    let firehose_filters = env::var_os("DISABLE_FIREHOSE_FILTERS").is_none();
+    let static_filters = ENV_VARS.experimental_static_filters;
 
     let blockchain_map = Arc::new(blockchain_map);
     let subgraph_instance_manager = SubgraphInstanceManager::new(
@@ -126,7 +151,6 @@ pub async fn run(
         metrics_registry.clone(),
         link_resolver.cheap_clone(),
         static_filters,
-        firehose_filters,
     );
 
     // Create IPFS-based subgraph provider
@@ -158,7 +182,8 @@ pub async fn run(
 
     let subgraph_name = SubgraphName::new(name)
         .expect("Subgraph name must contain only a-z, A-Z, 0-9, '-' and '_'");
-    let subgraph_hash = DeploymentHash::new(hash).expect("Subgraph hash must be a valid IPFS hash");
+    let subgraph_hash =
+        DeploymentHash::new(hash.clone()).expect("Subgraph hash must be a valid IPFS hash");
 
     info!(&logger, "Creating subgraph {}", name);
     let create_result =
@@ -179,26 +204,21 @@ pub async fn run(
         subgraph_hash.clone(),
         node_id.clone(),
         None,
+        None,
     )
     .await?;
 
-    let deployments = Deployment::lookup(&primary_pool, name)?;
-    let deployment = deployments
-        .first()
-        .expect("At least one deployment should exist");
+    let locator = locate(subgraph_store.as_ref(), &hash)?;
 
-    SubgraphAssignmentProvider::start(
-        subgraph_provider.as_ref(),
-        deployment.locator(),
-        Some(stop_block),
-    )
-    .await?;
+    SubgraphAssignmentProvider::start(subgraph_provider.as_ref(), locator, Some(stop_block))
+        .await?;
 
     loop {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         let block_ptr = subgraph_store
             .least_block_ptr(&subgraph_hash)
+            .await
             .unwrap()
             .unwrap();
 
@@ -258,14 +278,6 @@ enum ProviderNetworkStatus {
 /// hash from the client. If we can't get it within that time, we'll try and
 /// continue regardless.
 const NET_VERSION_WAIT_TIME: Duration = Duration::from_secs(30);
-
-lazy_static! {
-    static ref REORG_THRESHOLD: BlockNumber = env::var("ETHEREUM_REORG_THRESHOLD")
-        .ok()
-        .map(|s| BlockNumber::from_str(&s)
-            .unwrap_or_else(|_| panic!("failed to parse env var ETHEREUM_REORG_THRESHOLD")))
-        .unwrap_or(250);
-}
 
 fn create_ipfs_clients(logger: &Logger, ipfs_addresses: &Vec<String>) -> Vec<IpfsClient> {
     // Parse the IPFS URL from the `--ipfs` command line argument
@@ -362,7 +374,7 @@ async fn create_ethereum_networks(
                 use crate::config::Transport::*;
 
                 let transport = match web3.transport {
-                    Rpc => Transport::new_rpc(&web3.url, web3.headers.clone()),
+                    Rpc => Transport::new_rpc(Url::parse(&web3.url)?, web3.headers.clone()),
                     Ipc => Transport::new_ipc(&web3.url).await,
                     Ws => Transport::new_ws(&web3.url).await,
                 };
@@ -420,6 +432,7 @@ async fn create_firehose_networks(
                     &provider.label,
                     &firehose.url,
                     firehose.token.clone(),
+                    firehose.filters_enabled(),
                 )
                 .await?;
 

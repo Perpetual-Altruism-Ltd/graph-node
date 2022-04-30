@@ -4,7 +4,16 @@ scalar Bytes
 scalar ID
 scalar Int
 scalar String
+
+# An opaque object type. Note that this is equivalent to a JSON object, rather
+# than a generic JSON value; as such it cannot be e.g. a string or an integer.
 scalar JSONObject
+# A string in the format of `YYYY-MM-DD`. This is the standard adopted by
+# RFC3339, which is equivalent to the "ISO 8601 extended format".
+# See also:
+# - https://datatracker.ietf.org/doc/html/rfc3339#section-5.6
+# - https://en.wikipedia.org/wiki/ISO_8601#Calendar_dates
+scalar Date
 
 type Query {
   indexingStatusForCurrentVersion(subgraphName: String!): SubgraphIndexingStatus
@@ -19,9 +28,21 @@ type Query {
     blockHash: Bytes!
     indexer: Bytes
   ): Bytes
+  """
+  Proofs of indexing for several deployments and blocks that can be shared and
+  compared in public without revealing the _actual_ proof of indexing that every
+  indexer has in their database
+  """
+  publicProofsOfIndexing(
+    requests: [PublicProofOfIndexingRequest!]!
+  ): [PublicProofOfIndexingResult!]!
   subgraphFeatures(subgraphId: String!): SubgraphFeatures!
   entityChangesInBlock(subgraphId: String!, blockNumber: Int!): EntityChanges!
   blockData(network: String!, blockHash: Bytes!): JSONObject
+  cachedEthereumCalls(
+    network: String!
+    blockHash: Bytes!
+  ): [CachedEthereumCall!]
 }
 
 type SubgraphIndexingStatus {
@@ -100,6 +121,13 @@ enum Health {
   failed
 }
 
+type CachedEthereumCall {
+  idHash: Bytes!
+  block: Block!
+  contractAddress: Bytes!
+  returnValue: Bytes!
+}
+
 type SubgraphFeatures {
   features: [Feature!]!
   errors: [String!]!
@@ -111,4 +139,37 @@ enum Feature {
   grafting
   fullTextSearch
   ipfsOnEthereumContracts
+}
+
+input BlockInput {
+  hash: Bytes!
+  number: BigInt!
+}
+
+input ProofOfIndexingRequest {
+  deployment: String!
+  block: BlockInput!
+}
+
+input PublicProofOfIndexingRequest {
+  deployment: String!
+  blockNumber: BigInt!
+}
+
+type PartialBlock {
+  hash: Bytes
+  number: BigInt!
+}
+
+type PublicProofOfIndexingResult {
+  deployment: String!
+  block: PartialBlock!
+  proofOfIndexing: Bytes!
+}
+
+type ProofOfIndexingResult {
+  deployment: String!
+  block: Block!
+  "There may not be a proof of indexing available for the deployment and block"
+  proofOfIndexing: Bytes
 }

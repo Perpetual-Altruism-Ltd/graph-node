@@ -54,8 +54,8 @@ impl QueryStoreTrait for QueryStore {
             .await?)
     }
 
-    fn block_ptr(&self) -> Result<Option<BlockPtr>, StoreError> {
-        self.store.block_ptr(&self.site)
+    async fn block_ptr(&self) -> Result<Option<BlockPtr>, StoreError> {
+        self.store.block_ptr(self.site.cheap_clone()).await
     }
 
     fn block_number(&self, block_hash: H256) -> Result<Option<BlockNumber>, StoreError> {
@@ -81,7 +81,7 @@ impl QueryStoreTrait for QueryStore {
             .transpose()
     }
 
-    fn wait_stats(&self) -> PoolWaitStats {
+    fn wait_stats(&self) -> Result<PoolWaitStats, StoreError> {
         self.store.wait_stats(self.replica_id)
     }
 
@@ -110,7 +110,7 @@ impl QueryStoreTrait for QueryStore {
         &self.site.network
     }
 
-    async fn query_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+    async fn query_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, StoreError> {
         self.store.query_permit(self.replica_id).await
     }
 }

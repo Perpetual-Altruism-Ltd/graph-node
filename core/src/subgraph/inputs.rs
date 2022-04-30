@@ -1,3 +1,4 @@
+use graph::blockchain::TriggersAdapter;
 use graph::components::store::WritableStore;
 use graph::{
     blockchain::Blockchain,
@@ -15,10 +16,9 @@ pub struct IndexingInputs<C: Blockchain> {
     pub stop_block: Option<BlockNumber>,
     pub store: Arc<dyn WritableStore>,
     pub debug_fork: Option<Arc<dyn SubgraphFork>>,
-    pub triggers_adapter: Arc<C::TriggersAdapter>,
+    pub triggers_adapter: Arc<dyn TriggersAdapter<C>>,
     pub chain: Arc<C>,
     pub templates: Arc<Vec<C::DataSourceTemplate>>,
     pub unified_api_version: UnifiedMappingApiVersion,
     pub static_filters: bool,
-    pub firehose_grpc_filters: bool,
 }

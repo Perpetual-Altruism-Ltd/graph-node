@@ -45,6 +45,15 @@ pub use types::{BlockHash, BlockPtr, ChainIdentifier};
 
 use self::block_stream::BlockStream;
 
+pub trait TriggersAdapterSelector<C: Blockchain>: Sync + Send {
+    fn triggers_adapter(
+        &self,
+        loc: &DeploymentLocator,
+        capabilities: &C::NodeCapabilities,
+        unified_api_version: UnifiedMappingApiVersion,
+    ) -> Result<Arc<dyn TriggersAdapter<C>>, Error>;
+}
+
 pub trait Block: Send + Sync {
     fn ptr(&self) -> BlockPtr;
     fn parent_ptr(&self) -> Option<BlockPtr>;
@@ -74,17 +83,15 @@ pub trait Blockchain: Debug + Sized + Send + Sync + Unpin + 'static {
 
     // The `Clone` bound is used when reprocessing a block, because `triggers_in_block` requires an
     // owned `Block`. It would be good to come up with a way to remove this bound.
-    type Block: Block + Clone;
+    type Block: Block + Clone + Debug;
     type DataSource: DataSource<Self>;
     type UnresolvedDataSource: UnresolvedDataSource<Self>;
 
     type DataSourceTemplate: DataSourceTemplate<Self> + Clone;
     type UnresolvedDataSourceTemplate: UnresolvedDataSourceTemplate<Self>;
 
-    type TriggersAdapter: TriggersAdapter<Self>;
-
     /// Trigger data as parsed from the triggers adapter.
-    type TriggerData: TriggerData + Ord + Send + Sync;
+    type TriggerData: TriggerData + Ord + Send + Sync + Debug;
 
     /// Decoded trigger ready to be processed by the mapping.
     /// New implementations should have this be the same as `TriggerData`.
@@ -95,14 +102,12 @@ pub trait Blockchain: Debug + Sized + Send + Sync + Unpin + 'static {
 
     type NodeCapabilities: NodeCapabilities<Self> + std::fmt::Display;
 
-    type RuntimeAdapter: RuntimeAdapter<Self>;
-
     fn triggers_adapter(
         &self,
-        loc: &DeploymentLocator,
+        log: &DeploymentLocator,
         capabilities: &Self::NodeCapabilities,
         unified_api_version: UnifiedMappingApiVersion,
-    ) -> Result<Arc<Self::TriggersAdapter>, Error>;
+    ) -> Result<Arc<dyn TriggersAdapter<Self>>, Error>;
 
     async fn new_firehose_block_stream(
         &self,
@@ -112,7 +117,6 @@ pub trait Blockchain: Debug + Sized + Send + Sync + Unpin + 'static {
         subgraph_current_block: Option<BlockPtr>,
         filter: Arc<Self::TriggerFilter>,
         unified_api_version: UnifiedMappingApiVersion,
-        grpc_filters: bool,
     ) -> Result<Box<dyn BlockStream<Self>>, Error>;
 
     async fn new_polling_block_stream(
@@ -132,7 +136,7 @@ pub trait Blockchain: Debug + Sized + Send + Sync + Unpin + 'static {
         number: BlockNumber,
     ) -> Result<BlockPtr, IngestorError>;
 
-    fn runtime_adapter(&self) -> Arc<Self::RuntimeAdapter>;
+    fn runtime_adapter(&self) -> Arc<dyn RuntimeAdapter<Self>>;
 
     fn is_firehose_supported(&self) -> bool;
 }
@@ -150,7 +154,7 @@ pub enum IngestorError {
     ReceiptUnavailable(H256, H256),
 
     /// An unexpected error occurred.
-    #[error("Ingestor error: {0}")]
+    #[error("Ingestor error: {0:#}")]
     Unknown(Error),
 }
 
@@ -234,7 +238,7 @@ pub trait UnresolvedDataSourceTemplate<C: Blockchain>:
 {
     async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<C::DataSourceTemplate, anyhow::Error>;
 }
@@ -251,7 +255,7 @@ pub trait UnresolvedDataSource<C: Blockchain>:
 {
     async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<C::DataSource, anyhow::Error>;
 }
@@ -363,7 +367,7 @@ impl BlockchainKind {
 }
 
 /// A collection of blockchains, keyed by `BlockchainKind` and network.
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct BlockchainMap(HashMap<(BlockchainKind, String), Arc<dyn Any + Send + Sync>>);
 
 impl BlockchainMap {

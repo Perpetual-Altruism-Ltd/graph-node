@@ -7,16 +7,13 @@ use graph::blockchain::{Block as BlockchainBlock, BlockchainKind, ChainIdentifie
 use graph::cheap_clone::CheapClone;
 use graph::firehose::{FirehoseEndpoint, FirehoseNetworks};
 use graph::ipfs_client::IpfsClient;
-use graph::prelude::{anyhow, tokio, BlockNumber};
+use graph::prelude::{anyhow, tokio};
 use graph::prelude::{prost, MetricsRegistry as MetricsRegistryTrait};
 use graph::slog::{debug, error, info, o, Logger};
+use graph::url::Url;
 use graph::util::security::SafeDisplay;
 use graph_chain_ethereum::{self as ethereum, EthereumAdapterTrait, Transport};
-use graph_core::MetricsRegistry;
-use lazy_static::lazy_static;
 use std::collections::{BTreeMap, HashMap};
-use std::env;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,15 +34,6 @@ enum ProviderNetworkStatus {
 /// hash from the client. If we can't get it within that time, we'll try and
 /// continue regardless.
 const NET_VERSION_WAIT_TIME: Duration = Duration::from_secs(30);
-
-lazy_static! {
-    // Default to an Ethereum reorg threshold to 50 blocks
-    pub static ref REORG_THRESHOLD: BlockNumber = env::var("ETHEREUM_REORG_THRESHOLD")
-        .ok()
-        .map(|s| BlockNumber::from_str(&s)
-            .unwrap_or_else(|_| panic!("failed to parse env var ETHEREUM_REORG_THRESHOLD")))
-        .unwrap_or(250);
-}
 
 pub fn create_ipfs_clients(logger: &Logger, ipfs_addresses: &Vec<String>) -> Vec<IpfsClient> {
     // Parse the IPFS URL from the `--ipfs` command line argument
@@ -117,7 +105,7 @@ pub fn create_ipfs_clients(logger: &Logger, ipfs_addresses: &Vec<String>) -> Vec
 /// Parses an Ethereum connection string and returns the network name and Ethereum adapter.
 pub async fn create_ethereum_networks(
     logger: Logger,
-    registry: Arc<MetricsRegistry>,
+    registry: Arc<dyn MetricsRegistryTrait>,
     config: &Config,
 ) -> Result<EthereumNetworks, anyhow::Error> {
     let eth_rpc_metrics = Arc::new(ProviderEthRpcMetrics::new(registry));
@@ -142,7 +130,7 @@ pub async fn create_ethereum_networks(
                 use crate::config::Transport::*;
 
                 let transport = match web3.transport {
-                    Rpc => Transport::new_rpc(&web3.url, web3.headers.clone()),
+                    Rpc => Transport::new_rpc(Url::parse(&web3.url)?, web3.headers.clone()),
                     Ipc => Transport::new_ipc(&web3.url).await,
                     Ws => Transport::new_ws(&web3.url).await,
                 };
@@ -200,6 +188,7 @@ pub async fn create_firehose_networks(
                     &provider.label,
                     &firehose.url,
                     firehose.token.clone(),
+                    firehose.filters_enabled(),
                 )
                 .await?;
 

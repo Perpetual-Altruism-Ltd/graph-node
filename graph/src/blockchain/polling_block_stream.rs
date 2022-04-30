@@ -81,7 +81,7 @@ where
     C: Blockchain,
 {
     chain_store: Arc<dyn ChainStore>,
-    adapter: Arc<C::TriggersAdapter>,
+    adapter: Arc<dyn TriggersAdapter<C>>,
     node_id: NodeId,
     subgraph_id: DeploymentHash,
     // This is not really a block number, but the (unsigned) difference
@@ -148,7 +148,7 @@ where
     pub fn new(
         chain_store: Arc<dyn ChainStore>,
         chain_head_update_stream: ChainHeadUpdateStream,
-        adapter: Arc<C::TriggersAdapter>,
+        adapter: Arc<dyn TriggersAdapter<C>>,
         node_id: NodeId,
         subgraph_id: DeploymentHash,
         filter: Arc<C::TriggerFilter>,
@@ -220,7 +220,7 @@ where
         let max_block_range_size = self.max_block_range_size;
 
         // Get pointers from database for comparison
-        let head_ptr_opt = ctx.chain_store.chain_head_ptr()?;
+        let head_ptr_opt = ctx.chain_store.chain_head_ptr().await?;
         let subgraph_ptr = self.current_block.clone();
 
         // If chain head ptr is not set yet
@@ -423,7 +423,7 @@ where
 
             // In principle this block should be in the store, but we have seen this error for deep
             // reorgs in ropsten.
-            let head_ancestor_opt = self.adapter.ancestor_block(head_ptr, offset)?;
+            let head_ancestor_opt = self.adapter.ancestor_block(head_ptr, offset).await?;
 
             match head_ancestor_opt {
                 None => {

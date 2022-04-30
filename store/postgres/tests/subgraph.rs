@@ -3,13 +3,12 @@ use graph::{
         server::index_node::VersionInfo,
         store::{DeploymentLocator, StatusStore},
     },
-    data::subgraph::schema::SubgraphError,
     data::subgraph::schema::SubgraphHealth,
+    data::subgraph::schema::{DeploymentCreate, SubgraphError},
     prelude::EntityChange,
     prelude::EntityChangeOperation,
     prelude::QueryStoreManager,
     prelude::Schema,
-    prelude::SubgraphDeploymentEntity,
     prelude::SubgraphManifest,
     prelude::SubgraphName,
     prelude::SubgraphVersionSwitchingMode,
@@ -54,10 +53,10 @@ fn get_version_info(store: &Store, subgraph_name: &str) -> VersionInfo {
 
 #[test]
 fn reassign_subgraph() {
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new("reassignSubgraph").unwrap();
         remove_subgraphs();
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     fn find_assignment(store: &SubgraphStore, deployment: &DeploymentLocator) -> Option<String> {
@@ -68,7 +67,7 @@ fn reassign_subgraph() {
     }
 
     run_test_sequentially(|store| async move {
-        let id = setup();
+        let id = setup().await;
         let store = store.subgraph_store();
 
         // Check our setup
@@ -137,7 +136,7 @@ fn create_subgraph() {
             templates: vec![],
             chain: PhantomData,
         };
-        let deployment = SubgraphDeploymentEntity::new(&manifest, false, None);
+        let deployment = DeploymentCreate::new(&manifest, None);
         let node_id = NodeId::new("left").unwrap();
 
         let (deployment, events) = tap_store_events(|| {
@@ -324,18 +323,18 @@ fn status() {
     const NAME: &str = "infoSubgraph";
     const OTHER: &str = "otherInfoSubgraph";
 
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new(NAME).unwrap();
         remove_subgraphs();
-        let deployment = create_test_subgraph(&id, SUBGRAPH_GQL);
-        create_test_subgraph(&DeploymentHash::new(OTHER).unwrap(), SUBGRAPH_GQL);
+        let deployment = create_test_subgraph(&id, SUBGRAPH_GQL).await;
+        create_test_subgraph(&DeploymentHash::new(OTHER).unwrap(), SUBGRAPH_GQL).await;
         deployment
     }
 
     run_test_sequentially(|store| async move {
         use graph::data::subgraph::status;
 
-        let deployment = setup();
+        let deployment = setup().await;
         let infos = store
             .status(status::Filter::Deployments(vec![
                 deployment.hash.to_string(),
@@ -433,21 +432,22 @@ fn status() {
 fn version_info() {
     const NAME: &str = "versionInfoSubgraph";
 
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new(NAME).unwrap();
         remove_subgraphs();
         block_store::set_chain(vec![], NETWORK_NAME);
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     run_test_sequentially(|store| async move {
-        let deployment = setup();
-        transact_entity_operations(
+        let deployment = setup().await;
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCK_ONE.clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         let vi = get_version_info(&store, NAME);
@@ -474,7 +474,8 @@ fn version_info() {
 fn subgraph_error() {
     test_store::run_test_sequentially(|store| async move {
         let subgraph_id = DeploymentHash::new("testSubgraph").unwrap();
-        let deployment = test_store::create_test_subgraph(&subgraph_id, "type Foo { id: ID! }");
+        let deployment =
+            test_store::create_test_subgraph(&subgraph_id, "type Foo { id: ID! }").await;
 
         let count = || -> usize {
             let store = store.subgraph_store();
@@ -529,14 +530,14 @@ fn subgraph_error() {
 
 #[test]
 fn fatal_vs_non_fatal() {
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new("failUnfail").unwrap();
         remove_subgraphs();
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     run_test_sequentially(|store| async move {
-        let deployment = setup();
+        let deployment = setup().await;
         let query_store = store
             .query_store(deployment.hash.clone().into(), false)
             .await
@@ -573,14 +574,14 @@ fn fatal_vs_non_fatal() {
 fn fail_unfail_deterministic_error() {
     const NAME: &str = "failUnfailDeterministic";
 
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new(NAME).unwrap();
         remove_subgraphs();
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     run_test_sequentially(|store| async move {
-        let deployment = setup();
+        let deployment = setup().await;
 
         let query_store = store
             .query_store(deployment.hash.cheap_clone().into(), false)
@@ -588,12 +589,13 @@ fn fail_unfail_deterministic_error() {
             .unwrap();
 
         // Process the first block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[0].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // We don't have any errors and the subgraph is healthy.
@@ -604,12 +606,13 @@ fn fail_unfail_deterministic_error() {
         assert_eq!(Some(0), vi.latest_ethereum_block_number);
 
         // Process the second block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[1].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // Still no fatal errors.
@@ -664,14 +667,14 @@ fn fail_unfail_deterministic_error() {
 fn fail_unfail_deterministic_error_noop() {
     const NAME: &str = "failUnfailDeterministicNoop";
 
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new(NAME).unwrap();
         remove_subgraphs();
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     run_test_sequentially(|store| async move {
-        let deployment = setup();
+        let deployment = setup().await;
 
         let count = || -> usize {
             let store = store.subgraph_store();
@@ -679,12 +682,13 @@ fn fail_unfail_deterministic_error_noop() {
         };
 
         // Process the first block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[0].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // We don't have any errors and the subgraph is healthy.
@@ -695,12 +699,13 @@ fn fail_unfail_deterministic_error_noop() {
         assert_eq!(Some(0), vi.latest_ethereum_block_number);
 
         // Process the second block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[1].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // Still no fatal errors.
@@ -795,14 +800,14 @@ fn fail_unfail_deterministic_error_noop() {
 fn fail_unfail_non_deterministic_error() {
     const NAME: &str = "failUnfailNonDeterministic";
 
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new(NAME).unwrap();
         remove_subgraphs();
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     run_test_sequentially(|store| async move {
-        let deployment = setup();
+        let deployment = setup().await;
 
         let count = || -> usize {
             let store = store.subgraph_store();
@@ -810,12 +815,13 @@ fn fail_unfail_non_deterministic_error() {
         };
 
         // Process the first block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[0].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // We don't have any errors.
@@ -850,12 +856,13 @@ fn fail_unfail_non_deterministic_error() {
         assert_eq!(Some(0), vi.latest_ethereum_block_number);
 
         // Process the second block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[1].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // Subgraph failed but it's deployment head pointer advanced.
@@ -884,14 +891,14 @@ fn fail_unfail_non_deterministic_error() {
 fn fail_unfail_non_deterministic_error_noop() {
     const NAME: &str = "failUnfailNonDeterministicNoop";
 
-    fn setup() -> DeploymentLocator {
+    async fn setup() -> DeploymentLocator {
         let id = DeploymentHash::new(NAME).unwrap();
         remove_subgraphs();
-        create_test_subgraph(&id, SUBGRAPH_GQL)
+        create_test_subgraph(&id, SUBGRAPH_GQL).await
     }
 
     run_test_sequentially(|store| async move {
-        let deployment = setup();
+        let deployment = setup().await;
 
         let count = || -> usize {
             let store = store.subgraph_store();
@@ -899,12 +906,13 @@ fn fail_unfail_non_deterministic_error_noop() {
         };
 
         // Process the first block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[0].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // We don't have any errors and the subgraph is healthy.
@@ -915,12 +923,13 @@ fn fail_unfail_non_deterministic_error_noop() {
         assert_eq!(Some(0), vi.latest_ethereum_block_number);
 
         // Process the second block.
-        transact_entity_operations(
+        transact_and_wait(
             &store.subgraph_store(),
             &deployment,
             BLOCKS[1].clone(),
             vec![],
         )
+        .await
         .unwrap();
 
         // Still no errors.

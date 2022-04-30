@@ -13,13 +13,13 @@ pub use features::{SubgraphFeature, SubgraphFeatureValidationError};
 use anyhow::ensure;
 use anyhow::{anyhow, Error};
 use futures03::{future::try_join3, stream::FuturesOrdered, TryStreamExt as _};
-use lazy_static::lazy_static;
 use semver::Version;
 use serde::de;
 use serde::ser;
 use serde_yaml;
 use slog::{debug, info, Logger};
-use stable_hash::prelude::*;
+use stable_hash::{FieldAddress, StableHash};
+use stable_hash_legacy::SequenceNumber;
 use std::{collections::BTreeSet, marker::PhantomData};
 use thiserror::Error;
 use wasmparser;
@@ -30,7 +30,7 @@ use crate::data::{
     schema::{Schema, SchemaImportError, SchemaValidationError},
     subgraph::features::validate_subgraph_features,
 };
-use crate::prelude::{r, CheapClone};
+use crate::prelude::{r, CheapClone, ENV_VARS};
 use crate::{blockchain::DataSource, data::graphql::TryFromValue};
 use crate::{blockchain::DataSourceTemplate as _, data::query::QueryExecutionError};
 use crate::{
@@ -47,13 +47,6 @@ use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
-
-lazy_static! {
-    static ref DISABLE_GRAFTS: bool = std::env::var("GRAPH_DISABLE_GRAFTS")
-        .ok()
-        .map(|s| s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-}
 
 /// Deserialize an Address (with or without '0x' prefix).
 fn deserialize_address<'de, D>(deserializer: D) -> Result<Option<Address>, D::Error>
@@ -76,10 +69,20 @@ where
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeploymentHash(String);
 
-impl StableHash for DeploymentHash {
+impl stable_hash_legacy::StableHash for DeploymentHash {
     #[inline]
-    fn stable_hash<H: StableHasher>(&self, mut sequence_number: H::Seq, state: &mut H) {
-        self.0.stable_hash(sequence_number.next_child(), state);
+    fn stable_hash<H: stable_hash_legacy::StableHasher>(
+        &self,
+        mut sequence_number: H::Seq,
+        state: &mut H,
+    ) {
+        stable_hash_legacy::StableHash::stable_hash(&self.0, sequence_number.next_child(), state);
+    }
+}
+
+impl StableHash for DeploymentHash {
+    fn stable_hash<H: stable_hash::StableHasher>(&self, field_address: H::Addr, state: &mut H) {
+        stable_hash::StableHash::stable_hash(&self.0, field_address.child(0), state);
     }
 }
 
@@ -402,7 +405,7 @@ impl UnresolvedSchema {
     pub async fn resolve(
         self,
         id: DeploymentHash,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
     ) -> Result<Schema, anyhow::Error> {
         info!(logger, "Resolve schema"; "link" => &self.file.link);
@@ -449,7 +452,10 @@ pub struct Graft {
 }
 
 impl Graft {
-    fn validate<S: SubgraphStore>(&self, store: Arc<S>) -> Vec<SubgraphManifestValidationError> {
+    async fn validate<S: SubgraphStore>(
+        &self,
+        store: Arc<S>,
+    ) -> Vec<SubgraphManifestValidationError> {
         fn gbi(msg: String) -> Vec<SubgraphManifestValidationError> {
             vec![SubgraphManifestValidationError::GraftBaseInvalid(msg)]
         }
@@ -460,7 +466,7 @@ impl Graft {
         // between this check and when the graft actually happens when the
         // subgraph is started. We therefore check that any instance of the
         // base subgraph is suitable.
-        match store.least_block_ptr(&self.base) {
+        match store.least_block_ptr(&self.base).await {
             Err(e) => gbi(e.to_string()),
             Ok(None) => gbi(format!(
                 "failed to graft onto `{}` since it has not processed any blocks",
@@ -524,20 +530,19 @@ impl<C: Blockchain> UnvalidatedSubgraphManifest<C> {
     pub async fn resolve(
         id: DeploymentHash,
         raw: serde_yaml::Mapping,
-        resolver: Arc<impl LinkResolver>,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
         max_spec_version: semver::Version,
     ) -> Result<Self, SubgraphManifestResolveError> {
         Ok(Self(
-            SubgraphManifest::resolve_from_raw(id, raw, resolver.deref(), logger, max_spec_version)
-                .await?,
+            SubgraphManifest::resolve_from_raw(id, raw, resolver, logger, max_spec_version).await?,
         ))
     }
 
     /// Validates the subgraph manifest file.
     ///
     /// Graft base validation will be skipped if the parameter `validate_graft_base` is false.
-    pub fn validate<S: SubgraphStore>(
+    pub async fn validate<S: SubgraphStore>(
         self,
         store: Arc<S>,
         validate_graft_base: bool,
@@ -588,13 +593,13 @@ impl<C: Blockchain> UnvalidatedSubgraphManifest<C> {
             });
 
         if let Some(graft) = &self.0.graft {
-            if *DISABLE_GRAFTS {
+            if ENV_VARS.disable_grafts {
                 errors.push(SubgraphManifestValidationError::GraftBaseInvalid(
                     "Grafting of subgraphs is currently disabled".to_owned(),
                 ));
             }
             if validate_graft_base {
-                errors.extend(graft.validate(store));
+                errors.extend(graft.validate(store).await);
             }
         }
 
@@ -621,7 +626,7 @@ impl<C: Blockchain> SubgraphManifest<C> {
     pub async fn resolve_from_raw(
         id: DeploymentHash,
         mut raw: serde_yaml::Mapping,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
         max_spec_version: semver::Version,
     ) -> Result<Self, SubgraphManifestResolveError> {
@@ -637,7 +642,7 @@ impl<C: Blockchain> SubgraphManifest<C> {
         debug!(logger, "Features {:?}", unresolved.features);
 
         unresolved
-            .resolve(&*resolver, logger, max_spec_version)
+            .resolve(resolver, logger, max_spec_version)
             .await
             .map_err(SubgraphManifestResolveError::ResolveError)
     }
@@ -682,7 +687,7 @@ impl<C: Blockchain> SubgraphManifest<C> {
 impl<C: Blockchain> UnresolvedSubgraphManifest<C> {
     pub async fn resolve(
         self,
-        resolver: &impl LinkResolver,
+        resolver: &Arc<dyn LinkResolver>,
         logger: &Logger,
         max_spec_version: semver::Version,
     ) -> Result<SubgraphManifest<C>, anyhow::Error> {
@@ -710,15 +715,15 @@ impl<C: Blockchain> UnresolvedSubgraphManifest<C> {
         }
 
         let (schema, data_sources, templates) = try_join3(
-            schema.resolve(id.clone(), resolver, logger),
+            schema.resolve(id.clone(), &resolver, logger),
             data_sources
                 .into_iter()
-                .map(|ds| ds.resolve(resolver, logger))
+                .map(|ds| ds.resolve(&resolver, logger))
                 .collect::<FuturesOrdered<_>>()
                 .try_collect::<Vec<_>>(),
             templates
                 .into_iter()
-                .map(|template| template.resolve(resolver, logger))
+                .map(|template| template.resolve(&resolver, logger))
                 .collect::<FuturesOrdered<_>>()
                 .try_collect::<Vec<_>>(),
         )
@@ -726,11 +731,11 @@ impl<C: Blockchain> UnresolvedSubgraphManifest<C> {
 
         for ds in &data_sources {
             ensure!(
-                semver::VersionReq::parse(&format!("<= {}", *MAX_API_VERSION))
+                semver::VersionReq::parse(&format!("<= {}", ENV_VARS.mappings.max_api_version))
                     .unwrap()
                     .matches(&ds.api_version()),
                 "The maximum supported mapping API version of this indexer is {}, but `{}` was found",
-                *MAX_API_VERSION,
+                ENV_VARS.mappings.max_api_version,
                 ds.api_version()
             );
         }

@@ -40,7 +40,7 @@ pub use petgraph;
 pub use prometheus;
 pub use semver;
 pub use slog;
-pub use stable_hash;
+pub use stable_hash_legacy;
 pub use tokio_stream;
 pub use url;
 
@@ -58,6 +58,7 @@ pub mod prelude {
     pub use async_trait::async_trait;
     pub use bigdecimal;
     pub use chrono;
+    pub use envconfig;
     pub use ethabi;
     pub use futures::future;
     pub use futures::prelude::*;
@@ -92,7 +93,7 @@ pub mod prelude {
     pub type DynTryFuture<'a, Ok = (), Err = Error> =
         Pin<Box<dyn futures03::Future<Output = Result<Ok, Err>> + Send + 'a>>;
 
-    pub use crate::blockchain::BlockPtr;
+    pub use crate::blockchain::{BlockHash, BlockPtr};
 
     pub use crate::components::ethereum::{
         EthereumBlock, EthereumBlockWithCalls, EthereumCall, LightEthereumBlock,
@@ -113,12 +114,12 @@ pub mod prelude {
     pub use crate::components::server::query::GraphQLServer;
     pub use crate::components::server::subscription::SubscriptionServer;
     pub use crate::components::store::{
-        AttributeNames, BlockNumber, ChainStore, ChildMultiplicity, EntityCache, EntityChange,
-        EntityChangeOperation, EntityCollection, EntityFilter, EntityKey, EntityLink,
-        EntityModification, EntityOperation, EntityOrder, EntityQuery, EntityRange, EntityWindow,
-        EthereumCallCache, ParentLink, PoolWaitStats, QueryStore, QueryStoreManager, StoreError,
-        StoreEvent, StoreEventStream, StoreEventStreamBox, SubgraphStore, UnfailOutcome,
-        WindowAttribute, BLOCK_NUMBER_MAX, SUBSCRIPTION_THROTTLE_INTERVAL,
+        AttributeNames, BlockNumber, CachedEthereumCall, ChainStore, ChildMultiplicity,
+        EntityCache, EntityChange, EntityChangeOperation, EntityCollection, EntityFilter,
+        EntityKey, EntityLink, EntityModification, EntityOperation, EntityOrder, EntityQuery,
+        EntityRange, EntityWindow, EthereumCallCache, ParentLink, PartialBlockPtr, PoolWaitStats,
+        QueryStore, QueryStoreManager, StoreError, StoreEvent, StoreEventStream,
+        StoreEventStreamBox, SubgraphStore, UnfailOutcome, WindowAttribute, BLOCK_NUMBER_MAX,
     };
     pub use crate::components::subgraph::{
         BlockState, DataSourceTemplateInfo, HostMetrics, RuntimeHost, RuntimeHostBuilder,
@@ -126,6 +127,7 @@ pub mod prelude {
         SubgraphVersionSwitchingMode,
     };
     pub use crate::components::{transaction_receipt, EventConsumer, EventProducer};
+    pub use crate::env::ENV_VARS;
 
     pub use crate::cheap_clone::CheapClone;
     pub use crate::data::graphql::{

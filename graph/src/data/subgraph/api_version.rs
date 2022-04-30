@@ -1,14 +1,21 @@
 use itertools::Itertools;
-use lazy_static::lazy_static;
 use semver::Version;
 use std::collections::BTreeSet;
 use thiserror::Error;
 
 use super::SubgraphManifestValidationError;
 
+pub const API_VERSION_0_0_2: Version = Version::new(0, 0, 2);
+
 /// This version adds a new subgraph validation step that rejects manifests whose mappings have
 /// different API versions if at least one of them is equal to or higher than `0.0.5`.
 pub const API_VERSION_0_0_5: Version = Version::new(0, 0, 5);
+
+// Adds two new fields to the Transaction object: nonce and input
+pub const API_VERSION_0_0_6: Version = Version::new(0, 0, 6);
+
+/// Enables event handlers to require transaction receipts in the runtime.
+pub const API_VERSION_0_0_7: Version = Version::new(0, 0, 7);
 
 /// Before this check was introduced, there were already subgraphs in the wild with spec version
 /// 0.0.3, due to confusion with the api version. To avoid breaking those, we accept 0.0.3 though it
@@ -18,18 +25,10 @@ pub const SPEC_VERSION_0_0_3: Version = Version::new(0, 0, 3);
 /// This version supports subgraph feature management.
 pub const SPEC_VERSION_0_0_4: Version = Version::new(0, 0, 4);
 
-pub const MIN_SPEC_VERSION: Version = Version::new(0, 0, 2);
+/// This version supports event handlers having access to transaction receipts.
+pub const SPEC_VERSION_0_0_5: Version = Version::new(0, 0, 5);
 
-lazy_static! {
-    pub static ref MAX_SPEC_VERSION: Version = std::env::var("GRAPH_MAX_SPEC_VERSION")
-        .ok()
-        .and_then(|api_version_str| Version::parse(&api_version_str).ok())
-        .unwrap_or(SPEC_VERSION_0_0_4);
-    pub static ref MAX_API_VERSION: semver::Version = std::env::var("GRAPH_MAX_API_VERSION")
-        .ok()
-        .and_then(|api_version_str| semver::Version::parse(&api_version_str).ok())
-        .unwrap_or(semver::Version::new(0, 0, 6));
-}
+pub const MIN_SPEC_VERSION: Version = Version::new(0, 0, 2);
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct UnifiedMappingApiVersion(Option<Version>);
