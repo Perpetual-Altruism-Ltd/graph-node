@@ -1,37 +1,87 @@
-use either::Either;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
+
+use either::Either;
 use web3::types::{Address, H256};
 
-use graph::blockchain::{Blockchain, BlockchainKind};
+use graph::blockchain::{Blockchain, BlockchainKind, BlockchainMap};
+use graph::components::store::{BlockStore, EntityType, Store};
+use graph::data::graphql::{object, IntoValue, ObjectOrInterface, ValueMap};
 use graph::data::subgraph::features::detect_features;
-use graph::data::subgraph::{status, MAX_SPEC_VERSION};
+use graph::data::subgraph::status;
 use graph::data::value::Object;
 use graph::prelude::*;
-use graph::{
-    components::store::{BlockStore, EntityType, Store},
-    data::graphql::{object, IntoValue, ObjectOrInterface, ValueMap},
-};
 use graph_graphql::prelude::{a, ExecutionContext, Resolver};
 
-/// Resolver for the index node GraphQL API.
-pub struct IndexNodeResolver<S, R> {
-    logger: Logger,
-    store: Arc<S>,
-    link_resolver: Arc<R>,
+use crate::auth::PoiProtection;
+
+#[derive(Clone, Debug)]
+struct PublicProofOfIndexingRequest {
+    pub deployment: DeploymentHash,
+    pub block_number: BlockNumber,
 }
 
-impl<S, R> IndexNodeResolver<S, R>
-where
-    S: Store,
-    R: LinkResolver,
-{
-    pub fn new(logger: &Logger, store: Arc<S>, link_resolver: Arc<R>) -> Self {
+impl TryFromValue for PublicProofOfIndexingRequest {
+    fn try_from_value(value: &r::Value) -> Result<Self, Error> {
+        match value {
+            r::Value::Object(o) => Ok(Self {
+                deployment: DeploymentHash::new(o.get_required::<String>("deployment")?).unwrap(),
+                block_number: o.get_required::<BlockNumber>("blockNumber")?,
+            }),
+            _ => Err(anyhow!(
+                "Cannot parse non-object value as PublicProofOfIndexingRequest: {:?}",
+                value
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PublicProofOfIndexingResult {
+    pub deployment: DeploymentHash,
+    pub block: PartialBlockPtr,
+    pub proof_of_indexing: Option<[u8; 32]>,
+}
+
+impl IntoValue for PublicProofOfIndexingResult {
+    fn into_value(self) -> r::Value {
+        object! {
+            __typename: "ProofOfIndexingResult",
+            deployment: self.deployment.to_string(),
+            block: object! {
+                number: self.block.number,
+                hash: self.block.hash.map(|hash| hash.hash_hex()),
+            },
+            proofOfIndexing: self.proof_of_indexing.map(|poi| format!("0x{}", hex::encode(&poi))),
+        }
+    }
+}
+
+/// Resolver for the index node GraphQL API.
+pub struct IndexNodeResolver<S: Store> {
+    logger: Logger,
+    blockchain_map: Arc<BlockchainMap>,
+    store: Arc<S>,
+    link_resolver: Arc<dyn LinkResolver>,
+    bearer_token: Option<String>,
+}
+
+impl<S: Store> IndexNodeResolver<S> {
+    pub fn new(
+        logger: &Logger,
+        store: Arc<S>,
+        link_resolver: Arc<dyn LinkResolver>,
+        bearer_token: Option<String>,
+        blockchain_map: Arc<BlockchainMap>,
+    ) -> Self {
         let logger = logger.new(o!("component" => "IndexNodeResolver"));
+
         Self {
             logger,
+            blockchain_map,
             store,
             link_resolver,
+            bearer_token,
         }
     }
 
@@ -114,7 +164,7 @@ where
         } else {
             error!(
                 self.logger,
-                "Failed to fetch block data; nonexistant network";
+                "Failed to fetch block data; nonexistent network";
                 "network" => network,
                 "block_hash" => format!("{}", block_hash),
             );
@@ -149,6 +199,91 @@ where
         })
     }
 
+    fn resolve_cached_ethereum_calls(
+        &self,
+        field: &a::Field,
+    ) -> Result<r::Value, QueryExecutionError> {
+        let network = field
+            .get_required::<String>("network")
+            .expect("Valid network required");
+
+        let block_hash = field
+            .get_required::<H256>("blockHash")
+            .expect("Valid blockHash required");
+
+        let chain = if let Ok(c) = self
+            .blockchain_map
+            .get::<graph_chain_ethereum::Chain>(network.clone())
+        {
+            c
+        } else {
+            error!(
+                self.logger,
+                "Failed to fetch cached Ethereum calls; nonexistent network";
+                "network" => network,
+                "block_hash" => format!("{}", block_hash),
+            );
+            return Ok(r::Value::Null);
+        };
+        let chain_store = chain.chain_store();
+        let call_cache = chain.call_cache();
+
+        let block_number = match chain_store.block_number(block_hash) {
+            Ok(Some((_, n))) => n,
+            Ok(None) => {
+                error!(
+                    self.logger,
+                    "Failed to fetch cached Ethereum calls; block not found";
+                    "network" => network,
+                    "block_hash" => format!("{}", block_hash),
+                );
+                return Ok(r::Value::Null);
+            }
+            Err(e) => {
+                error!(
+                    self.logger,
+                    "Failed to fetch cached Ethereum calls; storage error";
+                    "network" => network.as_str(),
+                    "block_hash" => format!("{}", block_hash),
+                    "error" => e.to_string(),
+                );
+                return Ok(r::Value::Null);
+            }
+        };
+        let block_ptr = BlockPtr::new(block_hash.into(), block_number);
+
+        let calls = match call_cache.get_calls_in_block(block_ptr) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(
+                    self.logger,
+                    "Failed to fetch cached Ethereum calls; storage error";
+                    "network" => network.as_str(),
+                    "block_hash" => format!("{}", block_hash),
+                    "error" => e.to_string(),
+                );
+                return Err(QueryExecutionError::StoreError(Error::from(e).into()));
+            }
+        };
+
+        Ok(r::Value::List(
+            calls
+                .into_iter()
+                .map(|cached_call| {
+                    object! {
+                        idHash: &cached_call.blake3_id[..],
+                        block: object! {
+                            hash: cached_call.block_ptr.hash.hash_hex(),
+                            number: cached_call.block_ptr.number,
+                        },
+                        contractAddress: &cached_call.contract_address[..],
+                        returnValue: &cached_call.return_value[..],
+                    }
+                })
+                .collect::<Vec<r::Value>>(),
+        ))
+    }
+
     fn resolve_proof_of_indexing(&self, field: &a::Field) -> Result<r::Value, QueryExecutionError> {
         let deployment_id = field
             .get_required::<DeploymentHash>("subgraph")
@@ -166,9 +301,16 @@ where
 
         let block = BlockPtr::from((block_hash, block_number));
 
-        let indexer = field
+        let mut indexer = field
             .get_optional::<Address>("indexer")
             .expect("Invalid indexer");
+
+        let poi_protection = PoiProtection::from_env(&ENV_VARS);
+        if !poi_protection.validate_access_token(self.bearer_token.as_deref()) {
+            // Let's sign the POI with a zero'd address when the access token is
+            // invalid.
+            indexer = Some(Address::zero());
+        }
 
         let poi_fut = self
             .store
@@ -189,6 +331,61 @@ where
         };
 
         Ok(poi)
+    }
+
+    fn resolve_public_proofs_of_indexing(
+        &self,
+        field: &a::Field,
+    ) -> Result<r::Value, QueryExecutionError> {
+        let requests = field
+            .get_required::<Vec<PublicProofOfIndexingRequest>>("requests")
+            .expect("valid requests required, validation should have caught this");
+
+        // Only 10 requests are allowed at a time to avoid generating too many SQL queries;
+        // NOTE: Indexers should rate limit the status API anyway, but this adds some soft
+        // extra protection
+        if requests.len() > 10 {
+            return Err(QueryExecutionError::TooExpensive);
+        }
+
+        Ok(r::Value::List(
+            requests
+                .into_iter()
+                .map(|request| {
+                    match futures::executor::block_on(
+                        self.store.get_public_proof_of_indexing(
+                            &request.deployment,
+                            request.block_number,
+                        ),
+                    ) {
+                        Ok(Some(poi)) => (Some(poi), request),
+                        Ok(None) => (None, request),
+                        Err(e) => {
+                            error!(
+                                self.logger,
+                                "Failed to query public proof of indexing";
+                                "subgraph" => &request.deployment,
+                                "block" => format!("{}", request.block_number),
+                                "error" => format!("{:?}", e)
+                            );
+                            (None, request)
+                        }
+                    }
+                })
+                .map(|(poi_result, request)| PublicProofOfIndexingResult {
+                    deployment: request.deployment,
+                    block: match poi_result {
+                        Some((ref block, _)) => block.clone(),
+                        None => PartialBlockPtr::from(request.block_number),
+                    },
+                    proof_of_indexing: match poi_result {
+                        Some((_, poi)) => Some(poi),
+                        None => None,
+                    },
+                })
+                .map(IntoValue::into_value)
+                .collect(),
+        ))
     }
 
     fn resolve_indexing_status_for_version(
@@ -265,16 +462,17 @@ where
                         UnvalidatedSubgraphManifest::<graph_chain_ethereum::Chain>::resolve(
                             deployment_hash,
                             raw,
-                            self.link_resolver.clone(),
+                            &self.link_resolver,
                             &self.logger,
-                            MAX_SPEC_VERSION.clone(),
+                            ENV_VARS.max_spec_version.clone(),
                         )
                         .await?;
 
                     validate_and_extract_features(
                         &self.store.subgraph_store(),
                         unvalidated_subgraph_manifest,
-                    )?
+                    )
+                    .await?
                 }
 
                 BlockchainKind::Tendermint => {
@@ -282,16 +480,17 @@ where
                         UnvalidatedSubgraphManifest::<graph_chain_tendermint::Chain>::resolve(
                             deployment_hash,
                             raw,
-                            self.link_resolver.clone(),
+                            &self.link_resolver,
                             &self.logger,
-                            MAX_SPEC_VERSION.clone(),
+                            ENV_VARS.max_spec_version.clone(),
                         )
                         .await?;
 
                     validate_and_extract_features(
                         &self.store.subgraph_store(),
                         unvalidated_subgraph_manifest,
-                    )?
+                    )
+                    .await?
                 }
 
                 BlockchainKind::Near => {
@@ -299,16 +498,17 @@ where
                         UnvalidatedSubgraphManifest::<graph_chain_near::Chain>::resolve(
                             deployment_hash,
                             raw,
-                            self.link_resolver.clone(),
+                            &self.link_resolver,
                             &self.logger,
-                            MAX_SPEC_VERSION.clone(),
+                            ENV_VARS.max_spec_version.clone(),
                         )
                         .await?;
 
                     validate_and_extract_features(
                         &self.store.subgraph_store(),
                         unvalidated_subgraph_manifest,
-                    )?
+                    )
+                    .await?
                 }
             }
         };
@@ -330,7 +530,7 @@ struct ValidationPostProcessResult {
     network: r::Value,
 }
 
-fn validate_and_extract_features<C, SgStore>(
+async fn validate_and_extract_features<C, SgStore>(
     subgraph_store: &Arc<SgStore>,
     unvalidated_subgraph_manifest: UnvalidatedSubgraphManifest<C>,
 ) -> Result<ValidationPostProcessResult, QueryExecutionError>
@@ -343,34 +543,36 @@ where
     // Note that feature valiadation errors will be inside the error variant vector (because
     // `validate` also validates subgraph features), so we must filter them out to build our
     // response.
-    let subgraph_validation: Either<_, _> =
-        match unvalidated_subgraph_manifest.validate(subgraph_store.clone(), false) {
-            Ok(subgraph_manifest) => Either::Left(subgraph_manifest),
-            Err(validation_errors) => {
-                // We must ensure that all the errors are of the `FeatureValidationError`
-                // variant and that there is at least one error of that kind.
-                let feature_validation_errors: Vec<_> = validation_errors
-                    .into_iter()
-                    .filter(|error| {
-                        matches!(
-                            error,
-                            SubgraphManifestValidationError::FeatureValidationError(_)
-                        )
-                    })
-                    .collect();
+    let subgraph_validation: Either<_, _> = match unvalidated_subgraph_manifest
+        .validate(subgraph_store.clone(), false)
+        .await
+    {
+        Ok(subgraph_manifest) => Either::Left(subgraph_manifest),
+        Err(validation_errors) => {
+            // We must ensure that all the errors are of the `FeatureValidationError`
+            // variant and that there is at least one error of that kind.
+            let feature_validation_errors: Vec<_> = validation_errors
+                .into_iter()
+                .filter(|error| {
+                    matches!(
+                        error,
+                        SubgraphManifestValidationError::FeatureValidationError(_)
+                    )
+                })
+                .collect();
 
-                if !feature_validation_errors.is_empty() {
-                    Either::Right(feature_validation_errors)
-                } else {
-                    // If other error variants are present or there are no feature validation
-                    // errors, we must return early with an error.
-                    //
-                    // It might be useful to return a more thoughtful error, but that is not the
-                    // purpose of this endpoint.
-                    return Err(QueryExecutionError::InvalidSubgraphManifest);
-                }
+            if !feature_validation_errors.is_empty() {
+                Either::Right(feature_validation_errors)
+            } else {
+                // If other error variants are present or there are no feature validation
+                // errors, we must return early with an error.
+                //
+                // It might be useful to return a more thoughtful error, but that is not the
+                // purpose of this endpoint.
+                return Err(QueryExecutionError::InvalidSubgraphManifest);
             }
-        };
+        }
+    };
 
     // At this point, we have either:
     // 1. A valid subgraph manifest with no errors.
@@ -475,30 +677,24 @@ fn entity_changes_to_graphql(entity_changes: Vec<EntityOperation>) -> r::Value {
     }
 }
 
-impl<S, R> Clone for IndexNodeResolver<S, R>
-where
-    S: Clone,
-    R: Clone,
-{
+impl<S: Store> Clone for IndexNodeResolver<S> {
     fn clone(&self) -> Self {
         Self {
             logger: self.logger.clone(),
+            blockchain_map: self.blockchain_map.clone(),
             store: self.store.clone(),
             link_resolver: self.link_resolver.clone(),
+            bearer_token: self.bearer_token.clone(),
         }
     }
 }
 
 #[async_trait]
-impl<S, R> Resolver for IndexNodeResolver<S, R>
-where
-    S: Store,
-    R: LinkResolver,
-{
+impl<S: Store> Resolver for IndexNodeResolver<S> {
     const CACHEABLE: bool = false;
 
-    async fn query_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
-        self.store.query_permit().await
+    async fn query_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, QueryExecutionError> {
+        self.store.query_permit().await.map_err(Into::into)
     }
 
     fn prefetch(
@@ -540,15 +736,21 @@ where
         _field_definition: &s::Field,
         object_type: ObjectOrInterface<'_>,
     ) -> Result<r::Value, QueryExecutionError> {
+        // Resolves the `field.name` top-level field.
         match (prefetched_objects, object_type.name(), field.name.as_str()) {
-            // The top-level `indexingStatuses` field
             (None, "SubgraphIndexingStatus", "indexingStatuses") => {
                 self.resolve_indexing_statuses(field)
             }
-
-            // The top-level `indexingStatusesForSubgraphName` field
             (None, "SubgraphIndexingStatus", "indexingStatusesForSubgraphName") => {
                 self.resolve_indexing_statuses_for_subgraph_name(field)
+            }
+            (None, "CachedEthereumCall", "cachedEthereumCalls") => {
+                self.resolve_cached_ethereum_calls(field)
+            }
+
+            // The top-level `publicProofsOfIndexing` field
+            (None, "PublicProofOfIndexingResult", "publicProofsOfIndexing") => {
+                self.resolve_public_proofs_of_indexing(field)
             }
 
             // Resolve fields of `Object` values (e.g. the `chains` field of `ChainIndexingStatus`)
@@ -563,21 +765,15 @@ where
         _field_definition: &s::Field,
         _object_type: ObjectOrInterface<'_>,
     ) -> Result<r::Value, QueryExecutionError> {
+        // Resolves the `field.name` top-level field.
         match (prefetched_object, field.name.as_str()) {
-            // The top-level `indexingStatusForCurrentVersion` field
             (None, "indexingStatusForCurrentVersion") => {
                 self.resolve_indexing_status_for_version(field, true)
             }
-
-            // The top-level `indexingStatusForPendingVersion` field
             (None, "indexingStatusForPendingVersion") => {
                 self.resolve_indexing_status_for_version(field, false)
             }
-
-            // The top-level `indexingStatusForPendingVersion` field
             (None, "subgraphFeatures") => graph::block_on(self.resolve_subgraph_features(field)),
-
-            // The top-level `entityChangesInBlock` field
             (None, "entityChangesInBlock") => self.resolve_entity_changes_in_block(field),
 
             // Resolve fields of `Object` values (e.g. the `latestBlock` field of `EthereumBlock`)

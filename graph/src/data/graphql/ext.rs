@@ -4,20 +4,13 @@ use crate::prelude::s::{
     Definition, Directive, Document, EnumType, Field, InterfaceType, ObjectType, Type,
     TypeDefinition, Value,
 };
-use lazy_static::lazy_static;
+use crate::prelude::ENV_VARS;
 use std::collections::{BTreeMap, HashMap};
-
-lazy_static! {
-    static ref ALLOW_NON_DETERMINISTIC_FULLTEXT_SEARCH: bool = if cfg!(debug_assertions) {
-        true
-    } else {
-        std::env::var("GRAPH_ALLOW_NON_DETERMINISTIC_FULLTEXT_SEARCH").is_ok()
-    };
-}
 
 pub trait ObjectTypeExt {
     fn field(&self, name: &str) -> Option<&Field>;
     fn is_meta(&self) -> bool;
+    fn is_immutable(&self) -> bool;
 }
 
 impl ObjectTypeExt for ObjectType {
@@ -28,6 +21,16 @@ impl ObjectTypeExt for ObjectType {
     fn is_meta(&self) -> bool {
         self.name == META_FIELD_TYPE
     }
+
+    fn is_immutable(&self) -> bool {
+        self.find_directive("entity")
+            .and_then(|dir| dir.argument("immutable"))
+            .map(|value| match value {
+                Value::Boolean(b) => *b,
+                _ => false,
+            })
+            .unwrap_or(false)
+    }
 }
 
 impl ObjectTypeExt for InterfaceType {
@@ -36,6 +39,10 @@ impl ObjectTypeExt for InterfaceType {
     }
 
     fn is_meta(&self) -> bool {
+        false
+    }
+
+    fn is_immutable(&self) -> bool {
         false
     }
 }
@@ -143,7 +150,7 @@ impl DocumentExt for Document {
                     .collect()
             },
         );
-        if !*ALLOW_NON_DETERMINISTIC_FULLTEXT_SEARCH && !directives.is_empty() {
+        if !ENV_VARS.allow_non_deterministic_fulltext_search && !directives.is_empty() {
             Err(anyhow::anyhow!("Fulltext search is not yet deterministic"))
         } else {
             Ok(directives)

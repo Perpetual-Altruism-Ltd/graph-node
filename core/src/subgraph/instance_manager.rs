@@ -1,38 +1,32 @@
-use crate::subgraph::context::{IndexingContext, IndexingState, SharedInstanceKeepAliveMap};
+use crate::subgraph::context::{IndexingContext, SharedInstanceKeepAliveMap};
 use crate::subgraph::inputs::IndexingInputs;
 use crate::subgraph::loader::load_dynamic_data_sources;
-use crate::subgraph::metrics::{SubgraphInstanceManagerMetrics, SubgraphInstanceMetrics};
+use crate::subgraph::metrics::{
+    RunnerMetrics, SubgraphInstanceManagerMetrics, SubgraphInstanceMetrics,
+};
 use crate::subgraph::runner::SubgraphRunner;
 use crate::subgraph::SubgraphInstance;
 use graph::blockchain::block_stream::BlockStreamMetrics;
 use graph::blockchain::Blockchain;
 use graph::blockchain::NodeCapabilities;
 use graph::blockchain::{BlockchainKind, TriggerFilter};
-use graph::data::subgraph::MAX_SPEC_VERSION;
 use graph::prelude::{SubgraphInstanceManager as SubgraphInstanceManagerTrait, *};
-use graph::util::lfu_cache::LfuCache;
 use graph::{blockchain::BlockchainMap, components::store::DeploymentLocator};
 use tokio::task;
 
-pub struct SubgraphInstanceManager<S, M, L> {
+pub struct SubgraphInstanceManager<S: SubgraphStore> {
     logger_factory: LoggerFactory,
     subgraph_store: Arc<S>,
     chains: Arc<BlockchainMap>,
-    metrics_registry: Arc<M>,
+    metrics_registry: Arc<dyn MetricsRegistry>,
     manager_metrics: SubgraphInstanceManagerMetrics,
     instances: SharedInstanceKeepAliveMap,
-    link_resolver: Arc<L>,
+    link_resolver: Arc<dyn LinkResolver>,
     static_filters: bool,
-    firehose_grpc_filters: bool,
 }
 
 #[async_trait]
-impl<S, M, L> SubgraphInstanceManagerTrait for SubgraphInstanceManager<S, M, L>
-where
-    S: SubgraphStore,
-    M: MetricsRegistry,
-    L: LinkResolver + Clone,
-{
+impl<S: SubgraphStore> SubgraphInstanceManagerTrait for SubgraphInstanceManager<S> {
     async fn start_subgraph(
         self: Arc<Self>,
         loc: DeploymentLocator,
@@ -98,20 +92,14 @@ where
     }
 }
 
-impl<S, M, L> SubgraphInstanceManager<S, M, L>
-where
-    S: SubgraphStore,
-    M: MetricsRegistry,
-    L: LinkResolver + Clone,
-{
+impl<S: SubgraphStore> SubgraphInstanceManager<S> {
     pub fn new(
         logger_factory: &LoggerFactory,
         subgraph_store: Arc<S>,
         chains: Arc<BlockchainMap>,
-        metrics_registry: Arc<M>,
-        link_resolver: Arc<L>,
+        metrics_registry: Arc<dyn MetricsRegistry>,
+        link_resolver: Arc<dyn LinkResolver>,
         static_filters: bool,
-        firehose_filters: bool,
     ) -> Self {
         let logger = logger_factory.component_logger("SubgraphInstanceManager", None);
         let logger_factory = logger_factory.with_parent(logger.clone());
@@ -125,7 +113,6 @@ where
             instances: SharedInstanceKeepAliveMap::default(),
             link_resolver,
             static_filters,
-            firehose_grpc_filters: firehose_filters,
         }
     }
 
@@ -148,20 +135,7 @@ where
         // sources; if the subgraph is a graft or a copy, starting it will
         // do the copying and dynamic data sources won't show up until after
         // that is done
-        {
-            let store = store.clone();
-            let logger = logger.clone();
-
-            // `start_subgraph_deployment` is blocking.
-            task::spawn_blocking(move || {
-                store
-                    .start_subgraph_deployment(&logger)
-                    .map_err(Error::from)
-            })
-            .await
-            .map_err(Error::from)
-            .and_then(|x| x)?;
-        }
+        store.start_subgraph_deployment(&logger).await?;
 
         let manifest: SubgraphManifest<C> = {
             info!(logger, "Resolve subgraph files using IPFS");
@@ -170,9 +144,9 @@ where
                 deployment.hash.cheap_clone(),
                 manifest,
                 // Allow for infinite retries for subgraph definition files.
-                &self.link_resolver.as_ref().clone().with_retries(),
+                &Arc::from(self.link_resolver.with_retries()),
                 &logger,
-                MAX_SPEC_VERSION.clone(),
+                ENV_VARS.max_spec_version.clone(),
             )
             .await
             .context("Failed to resolve subgraph from IPFS")?;
@@ -229,6 +203,7 @@ where
         let stopwatch_metrics = StopwatchMetrics::new(
             logger.clone(),
             deployment.hash.clone(),
+            "process",
             self.metrics_registry.clone(),
         );
 
@@ -259,7 +234,7 @@ where
 
         // Initialize deployment_head with current deployment head. Any sort of trouble in
         // getting the deployment head ptr leads to initializing with 0
-        let deployment_head = store.block_ptr().map(|ptr| ptr.number).unwrap_or(0) as f64;
+        let deployment_head = store.block_ptr().await.map(|ptr| ptr.number).unwrap_or(0) as f64;
         block_stream_metrics.deployment_head.set(deployment_head);
 
         let host_builder = graph_runtime_wasm::RuntimeHostBuilder::new(
@@ -285,21 +260,19 @@ where
             templates,
             unified_api_version,
             static_filters: self.static_filters,
-            firehose_grpc_filters: self.firehose_grpc_filters,
         };
 
         // The subgraph state tracks the state of the subgraph instance over time
         let ctx = IndexingContext {
-            state: IndexingState {
-                logger: logger.cheap_clone(),
-                instance,
-                instances: self.instances.cheap_clone(),
-                filter,
-                entity_lfu_cache: LfuCache::new(),
-            },
-            subgraph_metrics,
-            host_metrics,
-            block_stream_metrics,
+            instance,
+            instances: self.instances.cheap_clone(),
+            filter,
+        };
+
+        let metrics = RunnerMetrics {
+            subgraph: subgraph_metrics,
+            host: host_metrics,
+            stream: block_stream_metrics,
         };
 
         // Keep restarting the subgraph until it terminates. The subgraph
@@ -316,7 +289,7 @@ where
         // it has a dedicated OS thread so the OS will handle the preemption. See
         // https://github.com/tokio-rs/tokio/issues/3493.
         graph::spawn_thread(deployment.to_string(), move || {
-            let runner = SubgraphRunner::new(inputs, ctx);
+            let runner = SubgraphRunner::new(inputs, ctx, logger.cheap_clone(), metrics);
             if let Err(e) = graph::block_on(task::unconstrained(runner.run())) {
                 error!(
                     &logger,

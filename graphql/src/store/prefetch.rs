@@ -19,6 +19,7 @@ use graph::{
         s, ApiSchema, AttributeNames, BlockNumber, ChildMultiplicity, EntityCollection,
         EntityFilter, EntityLink, EntityOrder, EntityWindow, Logger, ParentLink,
         QueryExecutionError, QueryStore, StoreError, Value as StoreValue, WindowAttribute,
+        ENV_VARS,
     },
 };
 
@@ -32,19 +33,6 @@ lazy_static! {
     static ref ARG_FIRST: String = String::from("first");
     static ref ARG_SKIP: String = String::from("skip");
     static ref ARG_ID: String = String::from("id");
-
-    /// Setting this environment variable to any value will enable the experimental feature "Select
-    /// by Specific Attributes".
-    static ref DISABLE_EXPERIMENTAL_FEATURE_SELECT_BY_SPECIFIC_ATTRIBUTE_NAMES: bool =
-        !std::env::var("GRAPH_ENABLE_SELECT_BY_SPECIFIC_ATTRIBUTES").is_ok();
-
-    static ref RESULT_SIZE_WARN: usize = std::env::var("GRAPH_GRAPHQL_WARN_RESULT_SIZE")
-        .map(|s| s.parse::<usize>().expect("`GRAPH_GRAPHQL_WARN_RESULT_SIZE` is a number"))
-        .unwrap_or(std::usize::MAX);
-
-    static ref RESULT_SIZE_ERROR: usize = std::env::var("GRAPH_GRAPHQL_ERROR_RESULT_SIZE")
-        .map(|s| s.parse::<usize>().expect("`GRAPH_GRAPHQL_ERROR_RESULT_SIZE` is a number"))
-        .unwrap_or(std::usize::MAX);
 }
 
 /// Intermediate data structure to hold the results of prefetching entities
@@ -510,12 +498,18 @@ fn execute_root_selection_set(
     execute_selection_set(resolver, ctx, make_root_node(), selection_set)
 }
 
-fn check_result_size(logger: &Logger, size: usize) -> Result<(), QueryExecutionError> {
-    if size > *RESULT_SIZE_ERROR {
-        return Err(QueryExecutionError::ResultTooBig(size, *RESULT_SIZE_ERROR));
+fn check_result_size<'a>(
+    ctx: &'a ExecutionContext<impl Resolver>,
+    size: usize,
+) -> Result<(), QueryExecutionError> {
+    if size > ENV_VARS.graphql.error_result_size {
+        return Err(QueryExecutionError::ResultTooBig(
+            size,
+            ENV_VARS.graphql.error_result_size,
+        ));
     }
-    if size > *RESULT_SIZE_WARN {
-        warn!(logger, "Large query result"; "size" => size);
+    if size > ENV_VARS.graphql.warn_result_size {
+        warn!(ctx.logger, "Large query result"; "size" => size, "query_id" => &ctx.query.query_id);
     }
     Ok(())
 }
@@ -571,12 +565,11 @@ fn execute_selection_set<'a>(
             // If this environment variable is set, the program will use an empty collection that,
             // effectively, causes the `AttributeNames::All` variant to be used as a fallback value for all
             // queries.
-            let collected_columns =
-                if *DISABLE_EXPERIMENTAL_FEATURE_SELECT_BY_SPECIFIC_ATTRIBUTE_NAMES {
-                    SelectedAttributes(BTreeMap::new())
-                } else {
-                    SelectedAttributes::for_field(field)?
-                };
+            let collected_columns = if !ENV_VARS.enable_select_by_specific_attributes {
+                SelectedAttributes(BTreeMap::new())
+            } else {
+                SelectedAttributes::for_field(field)?
+            };
 
             match execute_field(
                 resolver,
@@ -593,7 +586,7 @@ fn execute_selection_set<'a>(
                             Join::perform(&mut parents, children, field.response_key());
                             let weight =
                                 parents.iter().map(|parent| parent.weight()).sum::<usize>();
-                            check_result_size(&ctx.logger, weight)?;
+                            check_result_size(ctx, weight)?;
                         }
                         Err(mut e) => errors.append(&mut e),
                     }

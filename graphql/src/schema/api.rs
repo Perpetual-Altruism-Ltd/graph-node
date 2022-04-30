@@ -24,7 +24,9 @@ pub enum APISchemaError {
     FulltextSearchNonDeterministic,
 }
 
+// The followoing types are defined in meta.graphql
 const BLOCK_HEIGHT: &str = "Block_height";
+const CHANGE_BLOCK_FILTER_NAME: &str = "BlockChangedFilter";
 const ERROR_POLICY_TYPE: &str = "_SubgraphErrorPolicy_";
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -183,12 +185,15 @@ fn add_filter_type(
     let filter_type_name = format!("{}_filter", type_name);
     match schema.get_named_type(&filter_type_name) {
         None => {
+            let mut generated_filter_fields = field_input_values(schema, fields)?;
+            generated_filter_fields.push(block_changed_filter_argument());
+
             let typedef = TypeDefinition::InputObject(InputObjectType {
                 position: Pos::default(),
                 description: None,
                 name: filter_type_name,
                 directives: vec![],
-                fields: field_input_values(schema, fields)?,
+                fields: generated_filter_fields,
             });
             let def = Definition::TypeDefinition(typedef);
             schema.definitions.push(def);
@@ -275,11 +280,17 @@ fn field_scalar_filter_input_values(
             "in",
             "not_in",
             "contains",
+            "contains_nocase",
             "not_contains",
+            "not_contains_nocase",
             "starts_with",
+            "starts_with_nocase",
             "not_starts_with",
+            "not_starts_with_nocase",
             "ends_with",
+            "ends_with_nocase",
             "not_ends_with",
+            "not_ends_with_nocase",
         ],
         _ => vec!["", "not"],
     }
@@ -341,18 +352,25 @@ fn field_list_filter_input_values(
         };
 
         Some(
-            vec!["", "not", "contains", "not_contains"]
-                .into_iter()
-                .map(|filter_type| {
-                    input_value(
-                        &field.name,
-                        filter_type,
-                        Type::ListType(Box::new(Type::NonNullType(Box::new(
-                            input_field_type.clone(),
-                        )))),
-                    )
-                })
-                .collect(),
+            vec![
+                "",
+                "not",
+                "contains",
+                "contains_nocase",
+                "not_contains",
+                "not_contains_nocase",
+            ]
+            .into_iter()
+            .map(|filter_type| {
+                input_value(
+                    &field.name,
+                    filter_type,
+                    Type::ListType(Box::new(Type::NonNullType(Box::new(
+                        input_field_type.clone(),
+                    )))),
+                )
+            })
+            .collect(),
         )
     })
 }
@@ -518,6 +536,17 @@ fn block_argument() -> InputValue {
         ),
         name: "block".to_string(),
         value_type: Type::NamedType(BLOCK_HEIGHT.to_owned()),
+        default_value: None,
+        directives: vec![],
+    }
+}
+
+fn block_changed_filter_argument() -> InputValue {
+    InputValue {
+        position: Pos::default(),
+        description: Some("Filter for the block changed event.".to_owned()),
+        name: "_change_block".to_string(),
+        value_type: Type::NamedType(CHANGE_BLOCK_FILTER_NAME.to_owned()),
         default_value: None,
         directives: vec![],
     }
@@ -864,19 +893,29 @@ mod tests {
                 "name_in",
                 "name_not_in",
                 "name_contains",
+                "name_contains_nocase",
                 "name_not_contains",
+                "name_not_contains_nocase",
                 "name_starts_with",
+                "name_starts_with_nocase",
                 "name_not_starts_with",
+                "name_not_starts_with_nocase",
                 "name_ends_with",
+                "name_ends_with_nocase",
                 "name_not_ends_with",
+                "name_not_ends_with_nocase",
                 "favoritePetNames",
                 "favoritePetNames_not",
                 "favoritePetNames_contains",
+                "favoritePetNames_contains_nocase",
                 "favoritePetNames_not_contains",
+                "favoritePetNames_not_contains_nocase",
                 "pets",
                 "pets_not",
                 "pets_contains",
+                "pets_contains_nocase",
                 "pets_not_contains",
+                "pets_not_contains_nocase",
                 "favoriteFurType",
                 "favoriteFurType_not",
                 "favoriteFurType_in",
@@ -890,16 +929,41 @@ mod tests {
                 "favoritePet_in",
                 "favoritePet_not_in",
                 "favoritePet_contains",
+                "favoritePet_contains_nocase",
                 "favoritePet_not_contains",
+                "favoritePet_not_contains_nocase",
                 "favoritePet_starts_with",
+                "favoritePet_starts_with_nocase",
                 "favoritePet_not_starts_with",
+                "favoritePet_not_starts_with_nocase",
                 "favoritePet_ends_with",
+                "favoritePet_ends_with_nocase",
                 "favoritePet_not_ends_with",
+                "favoritePet_not_ends_with_nocase",
+                "_change_block"
             ]
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<String>>()
         );
+
+        let change_block_filter = filter_type
+            .fields
+            .iter()
+            .find(move |p| match p.name.as_str() {
+                "_change_block" => true,
+                _ => false,
+            })
+            .expect("_change_block field is missing in User_filter");
+
+        match &change_block_filter.value_type {
+            Type::NamedType(name) => assert_eq!(name.as_str(), "BlockChangedFilter"),
+            _ => panic!("_change_block field is not a named type"),
+        }
+
+        schema
+            .get_named_type("BlockChangedFilter")
+            .expect("BlockChangedFilter type is missing in derived API schema");
     }
 
     #[test]

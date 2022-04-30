@@ -2,22 +2,20 @@ mod cache;
 mod err;
 mod traits;
 
-pub use cache::{EntityCache, ModificationsAndCache};
+pub use cache::{CachedEthereumCall, EntityCache, ModificationsAndCache};
 pub use err::StoreError;
+use stable_hash::{FieldAddress, StableHash};
+use stable_hash_legacy::SequenceNumber;
 pub use traits::*;
 
 use futures::stream::poll_fn;
 use futures::{Async, Poll, Stream};
 use graphql_parser::schema as s;
-use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use stable_hash::prelude::*;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::env;
 use std::fmt;
 use std::fmt::Display;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -26,17 +24,6 @@ use crate::blockchain::DataSource;
 use crate::blockchain::{Block, Blockchain};
 use crate::data::{store::*, subgraph::Source};
 use crate::prelude::*;
-
-lazy_static! {
-    pub static ref SUBSCRIPTION_THROTTLE_INTERVAL: Duration =
-        env::var("SUBSCRIPTION_THROTTLE_INTERVAL")
-            .ok()
-            .map(|s| u64::from_str(&s).unwrap_or_else(|_| panic!(
-                "failed to parse env var SUBSCRIPTION_THROTTLE_INTERVAL"
-            )))
-            .map(Duration::from_millis)
-            .unwrap_or_else(|| Duration::from_millis(1000));
-}
 
 /// The type name of an entity. This is the string that is used in the
 /// subgraph's GraphQL schema as `type NAME @entity { .. }`
@@ -108,15 +95,44 @@ pub struct EntityKey {
     pub entity_id: String,
 }
 
+impl stable_hash_legacy::StableHash for EntityKey {
+    fn stable_hash<H: stable_hash_legacy::StableHasher>(
+        &self,
+        mut sequence_number: H::Seq,
+        state: &mut H,
+    ) {
+        let Self {
+            subgraph_id,
+            entity_type,
+            entity_id,
+        } = self;
+
+        stable_hash_legacy::StableHash::stable_hash(
+            subgraph_id,
+            sequence_number.next_child(),
+            state,
+        );
+        stable_hash_legacy::StableHash::stable_hash(
+            &entity_type.as_str(),
+            sequence_number.next_child(),
+            state,
+        );
+        stable_hash_legacy::StableHash::stable_hash(entity_id, sequence_number.next_child(), state);
+    }
+}
+
 impl StableHash for EntityKey {
-    fn stable_hash<H: StableHasher>(&self, mut sequence_number: H::Seq, state: &mut H) {
-        self.subgraph_id
-            .stable_hash(sequence_number.next_child(), state);
-        self.entity_type
-            .as_str()
-            .stable_hash(sequence_number.next_child(), state);
-        self.entity_id
-            .stable_hash(sequence_number.next_child(), state);
+    fn stable_hash<H: stable_hash::StableHasher>(&self, field_address: H::Addr, state: &mut H) {
+        let Self {
+            subgraph_id,
+            entity_type,
+            entity_id,
+        } = self;
+
+        subgraph_id.stable_hash(field_address.child(0), state);
+
+        stable_hash::StableHash::stable_hash(&entity_type.as_str(), field_address.child(1), state);
+        stable_hash::StableHash::stable_hash(entity_id, field_address.child(2), state);
     }
 }
 
@@ -132,8 +148,8 @@ impl EntityKey {
 
 #[test]
 fn key_stable_hash() {
-    use stable_hash::crypto::SetHasher;
-    use stable_hash::utils::stable_hash;
+    use stable_hash_legacy::crypto::SetHasher;
+    use stable_hash_legacy::utils::stable_hash;
 
     #[track_caller]
     fn hashes_to(key: &EntityKey, exp: &str) {
@@ -163,11 +179,18 @@ pub enum EntityFilter {
     In(Attribute, Vec<Value>),
     NotIn(Attribute, Vec<Value>),
     Contains(Attribute, Value),
+    ContainsNoCase(Attribute, Value),
     NotContains(Attribute, Value),
+    NotContainsNoCase(Attribute, Value),
     StartsWith(Attribute, Value),
+    StartsWithNoCase(Attribute, Value),
     NotStartsWith(Attribute, Value),
+    NotStartsWithNoCase(Attribute, Value),
     EndsWith(Attribute, Value),
+    EndsWithNoCase(Attribute, Value),
     NotEndsWith(Attribute, Value),
+    NotEndsWithNoCase(Attribute, Value),
+    ChangeBlockGte(BlockNumber),
 }
 
 // Define some convenience methods
@@ -760,6 +783,7 @@ pub enum UnfailOutcome {
     Unfailed,
 }
 
+#[derive(Clone)]
 pub struct StoredDynamicDataSource {
     pub name: String,
     pub source: Source,
@@ -843,6 +867,14 @@ impl EntityModification {
         use EntityModification::*;
         match self {
             Insert { key, .. } | Overwrite { key, .. } | Remove { key } => key,
+        }
+    }
+
+    pub fn entity(&self) -> Option<&Entity> {
+        match self {
+            EntityModification::Insert { data, .. }
+            | EntityModification::Overwrite { data, .. } => Some(data),
+            EntityModification::Remove { .. } => None,
         }
     }
 
@@ -948,5 +980,17 @@ impl AttributeNames {
             }
             (Select(a), Select(b)) => a.extend(b),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PartialBlockPtr {
+    pub number: BlockNumber,
+    pub hash: Option<BlockHash>,
+}
+
+impl From<BlockNumber> for PartialBlockPtr {
+    fn from(number: BlockNumber) -> Self {
+        Self { number, hash: None }
     }
 }

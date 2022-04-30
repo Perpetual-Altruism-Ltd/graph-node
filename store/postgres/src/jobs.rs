@@ -6,26 +6,18 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use diesel::{prelude::RunQueryDsl, sql_query, sql_types::Double};
 
-use graph::env::env_var;
-use graph::prelude::{chrono, error, lazy_static, Logger, MetricsRegistry, StoreError};
+use graph::prelude::{error, Logger, MetricsRegistry, StoreError, ENV_VARS};
 use graph::prometheus::Gauge;
 use graph::util::jobs::{Job, Runner};
 
 use crate::connection_pool::ConnectionPool;
 use crate::{unused, Store, SubgraphStore};
 
-lazy_static! {
-    static ref UNUSED_INTERVAL: chrono::Duration = {
-        let interval: u32 = env_var("GRAPH_REMOVE_UNUSED_INTERVAL", 360);
-        chrono::Duration::minutes(interval as i64)
-    };
-}
-
 pub fn register(
     runner: &mut Runner,
     store: Arc<Store>,
     primary_pool: ConnectionPool,
-    registry: Arc<impl MetricsRegistry>,
+    registry: Arc<dyn MetricsRegistry>,
 ) {
     runner.register(
         Arc::new(VacuumDeploymentsJob::new(store.subgraph_store())),
@@ -87,7 +79,7 @@ struct NotificationQueueUsage {
 }
 
 impl NotificationQueueUsage {
-    fn new(primary: ConnectionPool, registry: Arc<impl MetricsRegistry>) -> Self {
+    fn new(primary: ConnectionPool, registry: Arc<dyn MetricsRegistry>) -> Self {
         let usage_gauge = registry
             .new_gauge(
                 "notification_queue_usage",
@@ -187,8 +179,9 @@ impl Job for UnusedJob {
 
         let remove = match self
             .store
-            .list_unused_deployments(unused::Filter::UnusedLongerThan(*UNUSED_INTERVAL))
-        {
+            .list_unused_deployments(unused::Filter::UnusedLongerThan(
+                ENV_VARS.store.remove_unused_interval,
+            )) {
             Ok(remove) => remove,
             Err(e) => {
                 error!(logger, "failed to list removable deployments"; "error" => e.to_string());

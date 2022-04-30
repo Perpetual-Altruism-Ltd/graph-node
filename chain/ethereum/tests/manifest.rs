@@ -24,7 +24,7 @@ const GQL_SCHEMA_FULLTEXT: &str = include_str!("full-text.graphql");
 const MAPPING_WITH_IPFS_FUNC_WASM: &[u8] = include_bytes!("ipfs-on-ethereum-contracts.wasm");
 const ABI: &str = "[{\"type\":\"function\", \"inputs\": [{\"name\": \"i\",\"type\": \"uint256\"}],\"name\":\"get\",\"outputs\": [{\"type\": \"address\",\"name\": \"o\"}]}]";
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 struct TextResolver {
     texts: HashMap<String, Vec<u8>>,
 }
@@ -40,12 +40,12 @@ impl TextResolver {
 
 #[async_trait]
 impl LinkResolverTrait for TextResolver {
-    fn with_timeout(self, _timeout: Duration) -> Self {
-        self
+    fn with_timeout(&self, _timeout: Duration) -> Box<dyn LinkResolverTrait> {
+        Box::new(self.clone())
     }
 
-    fn with_retries(self) -> Self {
-        self
+    fn with_retries(&self) -> Box<dyn LinkResolverTrait> {
+        Box::new(self.clone())
     }
 
     async fn cat(&self, _logger: &Logger, link: &Link) -> Result<Vec<u8>, anyhow::Error> {
@@ -73,6 +73,8 @@ async fn resolve_manifest(text: &str) -> SubgraphManifest<graph_chain_ethereum::
     resolver.add("/ipfs/Qmabi", &ABI);
     resolver.add("/ipfs/Qmmapping", &MAPPING_WITH_IPFS_FUNC_WASM);
 
+    let resolver: Arc<dyn LinkResolverTrait> = Arc::new(resolver);
+
     let raw = serde_yaml::from_str(text).unwrap();
     SubgraphManifest::resolve_from_raw(id, raw, &resolver, &LOGGER, SPEC_VERSION_0_0_4.clone())
         .await
@@ -86,16 +88,12 @@ async fn resolve_unvalidated(text: &str) -> UnvalidatedSubgraphManifest<Chain> {
     resolver.add(id.as_str(), &text);
     resolver.add("/ipfs/Qmschema", &GQL_SCHEMA);
 
+    let resolver: Arc<dyn LinkResolverTrait> = Arc::new(resolver);
+
     let raw = serde_yaml::from_str(text).unwrap();
-    UnvalidatedSubgraphManifest::resolve(
-        id,
-        raw,
-        Arc::new(resolver),
-        &LOGGER,
-        SPEC_VERSION_0_0_4.clone(),
-    )
-    .await
-    .expect("Parsing simple manifest works")
+    UnvalidatedSubgraphManifest::resolve(id, raw, &resolver, &LOGGER, SPEC_VERSION_0_0_4.clone())
+        .await
+        .expect("Parsing simple manifest works")
 }
 
 // Some of these manifest tests should be made chain-independent, but for
@@ -160,13 +158,14 @@ specVersion: 0.0.2
         //
         // Validation against subgraph that hasn't synced anything fails
         //
-        let deployment = test_store::create_test_subgraph(&subgraph, GQL_SCHEMA);
+        let deployment = test_store::create_test_subgraph(&subgraph, GQL_SCHEMA).await;
         // This check is awkward since the test manifest has other problems
         // that the validation complains about as setting up a valid manifest
         // would be a bit more work; we just want to make sure that
         // graft-related checks work
         let msg = unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| matches!(e, SubgraphManifestValidationError::GraftBaseInvalid(_)))
@@ -181,12 +180,14 @@ specVersion: 0.0.2
         let mut thing = Entity::new();
         thing.set("id", "datthing");
         test_store::insert_entities(&deployment, vec![(EntityType::from("Thing"), thing)])
-            .expect("Can insert a thing");
+            .await
+            .unwrap();
 
         // Validation against subgraph that has not reached the graft point fails
         let unvalidated = resolve_unvalidated(YAML).await;
         let msg = unvalidated
             .validate(store, true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| matches!(e, SubgraphManifestValidationError::GraftBaseInvalid(_)))
@@ -255,6 +256,7 @@ graft:
         let unvalidated = resolve_unvalidated(YAML).await;
         let error_msg = unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -291,6 +293,7 @@ graft:
         let unvalidated = resolve_unvalidated(YAML).await;
         assert!(unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -321,6 +324,7 @@ schema:
         let unvalidated = resolve_unvalidated(YAML).await;
         assert!(unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -357,11 +361,13 @@ schema:
             resolver.add("/ipfs/Qmabi", &ABI);
             resolver.add("/ipfs/Qmschema", &GQL_SCHEMA_FULLTEXT);
 
+            let resolver: Arc<dyn LinkResolverTrait> = Arc::new(resolver);
+
             let raw = serde_yaml::from_str(YAML).unwrap();
             UnvalidatedSubgraphManifest::resolve(
                 id,
                 raw,
-                Arc::new(resolver),
+                &resolver,
                 &LOGGER,
                 SPEC_VERSION_0_0_4.clone(),
             )
@@ -371,6 +377,7 @@ schema:
 
         assert!(unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -406,11 +413,13 @@ schema:
             resolver.add("/ipfs/Qmabi", &ABI);
             resolver.add("/ipfs/Qmschema", &GQL_SCHEMA_FULLTEXT);
 
+            let resolver: Arc<dyn LinkResolverTrait> = Arc::new(resolver);
+
             let raw = serde_yaml::from_str(YAML).unwrap();
             UnvalidatedSubgraphManifest::resolve(
                 id,
                 raw,
-                Arc::new(resolver),
+                &resolver,
                 &LOGGER,
                 SPEC_VERSION_0_0_4.clone(),
             )
@@ -420,6 +429,7 @@ schema:
 
         let error_msg = unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -479,11 +489,13 @@ dataSources:
             resolver.add("/ipfs/Qmschema", &GQL_SCHEMA);
             resolver.add("/ipfs/Qmmapping", &MAPPING_WITH_IPFS_FUNC_WASM);
 
+            let resolver: Arc<dyn LinkResolverTrait> = Arc::new(resolver);
+
             let raw = serde_yaml::from_str(YAML).unwrap();
             UnvalidatedSubgraphManifest::resolve(
                 id,
                 raw,
-                Arc::new(resolver),
+                &resolver,
                 &LOGGER,
                 SPEC_VERSION_0_0_4.clone(),
             )
@@ -493,6 +505,7 @@ dataSources:
 
         let error_msg = unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -554,11 +567,13 @@ dataSources:
             resolver.add("/ipfs/Qmschema", &GQL_SCHEMA);
             resolver.add("/ipfs/Qmmapping", &MAPPING_WITH_IPFS_FUNC_WASM);
 
+            let resolver: Arc<dyn LinkResolverTrait> = Arc::new(resolver);
+
             let raw = serde_yaml::from_str(YAML).unwrap();
             UnvalidatedSubgraphManifest::resolve(
                 id,
                 raw,
-                Arc::new(resolver),
+                &resolver,
                 &LOGGER,
                 SPEC_VERSION_0_0_4.clone(),
             )
@@ -568,6 +583,7 @@ dataSources:
 
         assert!(unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {
@@ -596,6 +612,7 @@ schema:
         let unvalidated = resolve_unvalidated(YAML).await;
         assert!(unvalidated
             .validate(store.clone(), true)
+            .await
             .expect_err("Validation must fail")
             .into_iter()
             .find(|e| {

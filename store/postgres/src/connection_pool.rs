@@ -10,6 +10,7 @@ use graph::cheap_clone::CheapClone;
 use graph::constraint_violation;
 use graph::prelude::tokio;
 use graph::prelude::tokio::time::Instant;
+use graph::slog::warn;
 use graph::util::timed_rw_lock::TimedMutex;
 use graph::{
     prelude::{
@@ -17,13 +18,12 @@ use graph::{
         crit, debug, error, info, o,
         tokio::sync::Semaphore,
         CancelGuard, CancelHandle, CancelToken as _, CancelableError, Counter, Gauge, Logger,
-        MetricsRegistry, MovingStats, PoolWaitStats, StoreError,
+        MetricsRegistry, MovingStats, PoolWaitStats, StoreError, ENV_VARS,
     },
     util::security::SafeDisplay,
 };
 
 use std::fmt::{self, Write};
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,47 +34,6 @@ use postgres::config::{Config, Host};
 use crate::primary::{self, NAMESPACE_PUBLIC};
 use crate::{advisory_lock, catalog};
 use crate::{Shard, PRIMARY_SHARD};
-
-lazy_static::lazy_static! {
-    // There is typically no need to configure this. But this can be used to effectivey disable the
-    // query semaphore by setting it to a high number.
-    static ref EXTRA_QUERY_PERMITS: usize = {
-        std::env::var("GRAPH_EXTRA_QUERY_PERMITS")
-            .ok()
-            .map(|s| {
-                usize::from_str(&s).unwrap_or_else(|_| {
-                    panic!("GRAPH_EXTRA_QUERY_PERMITS must be a number, but is `{}`", s)
-                })
-            })
-            .unwrap_or(0)
-    };
-
-    // These environment variables should really be set through the
-    // configuration file; especially for min_idle and idle_timeout, it's
-    // likely that they should be configured differently for each pool
-
-    static ref CONNECTION_TIMEOUT: Duration = {
-        std::env::var("GRAPH_STORE_CONNECTION_TIMEOUT").ok().map(|s| Duration::from_millis(u64::from_str(&s).unwrap_or_else(|_| {
-            panic!("GRAPH_STORE_CONNECTION_TIMEOUT must be a positive number, but is `{}`", s)
-        }))).unwrap_or(Duration::from_secs(5))
-    };
-    static ref MIN_IDLE: Option<u32> = {
-        std::env::var("GRAPH_STORE_CONNECTION_MIN_IDLE").ok().map(|s| u32::from_str(&s).unwrap_or_else(|_| {
-           panic!("GRAPH_STORE_CONNECTION_MIN_IDLE must be a positive number but is `{}`", s)
-        }))
-    };
-    static ref IDLE_TIMEOUT: Duration = {
-        std::env::var("GRAPH_STORE_CONNECTION_IDLE_TIMEOUT").ok().map(|s| Duration::from_secs(u64::from_str(&s).unwrap_or_else(|_| {
-            panic!("GRAPH_STORE_CONNECTION_IDLE_TIMEOUT must be a positive number, but is `{}`", s)
-        }))).unwrap_or(Duration::from_secs(600))
-    };
-    // A fallback in case the logic to remember database availability goes
-    // wrong; when this is set, we always try to get a connection and never
-    // use the availability state we remembered
-    static ref TRY_ALWAYS: bool = {
-        std::env::var("GRAPH_STORE_CONNECTION_TRY_ALWAYS").ok().map(|_| true).unwrap_or(false)
-    };
-}
 
 pub struct ForeignServer {
     pub name: String,
@@ -270,6 +229,8 @@ enum PoolState {
     Created(Arc<PoolInner>, Arc<Vec<ForeignServer>>),
     /// The pool has been successfully set up
     Ready(Arc<PoolInner>),
+    /// The pool has been disabled by setting its size to 0
+    Disabled,
 }
 
 #[derive(Clone)]
@@ -350,21 +311,28 @@ impl ConnectionPool {
         servers: Arc<Vec<ForeignServer>>,
     ) -> ConnectionPool {
         let state_tracker = PoolStateTracker::new();
-        let pool = PoolInner::create(
-            shard_name,
-            pool_name.as_str(),
-            postgres_url,
-            pool_size,
-            fdw_pool_size,
-            logger,
-            registry,
-            state_tracker.clone(),
-        );
-        let shard = pool.shard.clone();
-        let pool_state = if pool_name.is_replica() {
-            PoolState::Ready(Arc::new(pool))
-        } else {
-            PoolState::Created(Arc::new(pool), servers)
+        let shard =
+            Shard::new(shard_name.to_string()).expect("shard_name is a valid name for a shard");
+        let pool_state = {
+            if pool_size == 0 {
+                PoolState::Disabled
+            } else {
+                let pool = PoolInner::create(
+                    shard.clone(),
+                    pool_name.as_str(),
+                    postgres_url,
+                    pool_size,
+                    fdw_pool_size,
+                    logger,
+                    registry,
+                    state_tracker.clone(),
+                );
+                if pool_name.is_replica() {
+                    PoolState::Ready(Arc::new(pool))
+                } else {
+                    PoolState::Created(Arc::new(pool), servers)
+                }
+            }
         };
         ConnectionPool {
             inner: Arc::new(TimedMutex::new(pool_state, format!("pool-{}", shard_name))),
@@ -380,7 +348,7 @@ impl ConnectionPool {
         let mut guard = self.inner.lock(&self.logger);
         match &*guard {
             PoolState::Created(pool, _) => *guard = PoolState::Ready(pool.clone()),
-            PoolState::Ready(_) => { /* nothing to do */ }
+            PoolState::Ready(_) | PoolState::Disabled => { /* nothing to do */ }
         }
     }
 
@@ -390,7 +358,7 @@ impl ConnectionPool {
     /// `StoreError::DatabaseUnavailable`
     fn get_ready(&self) -> Result<Arc<PoolInner>, StoreError> {
         let mut guard = self.inner.lock(&self.logger);
-        if !self.state_tracker.is_available() && !*TRY_ALWAYS {
+        if !self.state_tracker.is_available() && !ENV_VARS.store.connection_try_always {
             // We know that trying to use this pool is pointless since the
             // database is not available, and will only lead to other
             // operations having to wait until the connection timeout is
@@ -408,6 +376,7 @@ impl ConnectionPool {
                 Ok(pool2)
             }
             PoolState::Ready(pool) => Ok(pool.clone()),
+            PoolState::Disabled => Err(StoreError::DatabaseDisabled),
         }
     }
 
@@ -513,16 +482,22 @@ impl ConnectionPool {
         .unwrap();
     }
 
-    pub(crate) async fn query_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+    pub(crate) async fn query_permit(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, StoreError> {
         let pool = match &*self.inner.lock(&self.logger) {
             PoolState::Created(pool, _) | PoolState::Ready(pool) => pool.clone(),
+            PoolState::Disabled => {
+                return Err(StoreError::DatabaseDisabled);
+            }
         };
-        pool.query_permit().await
+        Ok(pool.query_permit().await)
     }
 
-    pub(crate) fn wait_stats(&self) -> PoolWaitStats {
+    pub(crate) fn wait_stats(&self) -> Result<PoolWaitStats, StoreError> {
         match &*self.inner.lock(&self.logger) {
-            PoolState::Created(pool, _) | PoolState::Ready(pool) => pool.wait_stats.clone(),
+            PoolState::Created(pool, _) | PoolState::Ready(pool) => Ok(pool.wait_stats.clone()),
+            PoolState::Disabled => Err(StoreError::DatabaseDisabled),
         }
     }
 
@@ -729,7 +704,7 @@ pub struct PoolInner {
 
 impl PoolInner {
     fn create(
-        shard_name: &str,
+        shard: Shard,
         pool_name: &str,
         postgres_url: String,
         pool_size: u32,
@@ -743,14 +718,14 @@ impl PoolInner {
         let const_labels = {
             let mut map = HashMap::new();
             map.insert("pool".to_owned(), pool_name.to_owned());
-            map.insert("shard".to_string(), shard_name.to_owned());
+            map.insert("shard".to_string(), shard.to_string());
             map
         };
         let error_counter = registry
             .global_counter(
                 "store_connection_error_count",
                 "The number of Postgres connections errors",
-                HashMap::new(),
+                const_labels.clone(),
             )
             .expect("failed to create `store_connection_error_count` counter");
         let error_handler = Box::new(ErrorHandler::new(
@@ -769,20 +744,33 @@ impl PoolInner {
 
         // Connect to Postgres
         let conn_manager = ConnectionManager::new(postgres_url.clone());
+        let min_idle = ENV_VARS.store.connection_min_idle.filter(|min_idle| {
+            if *min_idle <= pool_size {
+                true
+            } else {
+                warn!(
+                    logger_pool,
+                    "Configuration error: min idle {} exceeds pool size {}, ignoring min idle",
+                    min_idle,
+                    pool_size
+                );
+                false
+            }
+        });
         let builder: Builder<ConnectionManager<PgConnection>> = Pool::builder()
             .error_handler(error_handler.clone())
             .event_handler(event_handler.clone())
-            .connection_timeout(*CONNECTION_TIMEOUT)
+            .connection_timeout(ENV_VARS.store.connection_timeout)
             .max_size(pool_size)
-            .min_idle(*MIN_IDLE)
-            .idle_timeout(Some(*IDLE_TIMEOUT));
+            .min_idle(min_idle)
+            .idle_timeout(Some(ENV_VARS.store.connection_idle_timeout));
         let pool = builder.build_unchecked(conn_manager);
         let fdw_pool = fdw_pool_size.map(|pool_size| {
             let conn_manager = ConnectionManager::new(postgres_url.clone());
             let builder: Builder<ConnectionManager<PgConnection>> = Pool::builder()
                 .error_handler(error_handler)
                 .event_handler(event_handler)
-                .connection_timeout(*CONNECTION_TIMEOUT)
+                .connection_timeout(ENV_VARS.store.connection_timeout)
                 .max_size(pool_size)
                 .min_idle(Some(1))
                 .idle_timeout(Some(FDW_IDLE_TIMEOUT));
@@ -799,12 +787,11 @@ impl PoolInner {
                 const_labels,
             )
             .expect("failed to create `query_effort_ms` counter");
-        let max_concurrent_queries = pool_size as usize + *EXTRA_QUERY_PERMITS;
+        let max_concurrent_queries = pool_size as usize + ENV_VARS.store.extra_query_permits;
         let query_semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent_queries));
         PoolInner {
             logger: logger_pool,
-            shard: Shard::new(shard_name.to_string())
-                .expect("shard_name is a valid name for a shard"),
+            shard,
             postgres_url,
             pool,
             fdw_pool,
@@ -913,7 +900,7 @@ impl PoolInner {
         logger: &Logger,
     ) -> Result<PooledConnection<ConnectionManager<PgConnection>>, StoreError> {
         loop {
-            match self.pool.get_timeout(*CONNECTION_TIMEOUT) {
+            match self.pool.get_timeout(ENV_VARS.store.connection_timeout) {
                 Ok(conn) => return Ok(conn),
                 Err(e) => error!(logger, "Error checking out connection, retrying";
                    "error" => brief_error_msg(&e),
@@ -983,7 +970,7 @@ impl PoolInner {
     /// If any errors happen during the migration, the process panics
     pub fn setup(&self, servers: Arc<Vec<ForeignServer>>) -> Result<(), StoreError> {
         fn die(logger: &Logger, msg: &'static str, err: &dyn std::fmt::Display) -> ! {
-            crit!(logger, "{}", msg; "error" => err.to_string());
+            crit!(logger, "{}", msg; "error" => format!("{:#}", err));
             panic!("{}: {}", msg, err);
         }
 

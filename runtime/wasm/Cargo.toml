@@ -1,21 +1,20 @@
 [package]
 name = "graph-runtime-wasm"
-version = "0.25.1"
+version = "0.26.0"
 edition = "2021"
 
 [dependencies]
 async-trait = "0.1.50"
 atomic_refcell = "0.1.8"
-ethabi = "16.0"
+ethabi = "17.0"
 futures = "0.1.21"
 hex = "0.4.3"
 graph = { path = "../../graph" }
-graph-graphql = { path = "../../graphql" }
 bs58 = "0.4.0"
 graph-runtime-derive = { path = "../derive" }
-semver = "1.0.6"
+semver = "1.0.7"
 lazy_static = "1.4"
-uuid = { version = "0.8.1", features = ["v4"] }
+uuid = { version = "1.0.0", features = ["v4"] }
 strum = "0.21.0"
 strum_macros = "0.21.1"
 bytes = "1.0"
