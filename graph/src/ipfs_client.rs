@@ -73,7 +73,13 @@ impl IpfsClient {
         Ok(IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str(base)?),
-            tolkien_url: env::var("TOLKIEN_URL")?
+            tolkien_url: match env::var("TOLKIEN_URL") {
+                Ok(x) => {x}
+                Err(_) => {
+                    println!("No Tolkien Url! defaulting to http://127.0.0.1:30000");
+                    String::From("http://127.0.0.1:30000")
+                }
+            }
         })
     }
 
