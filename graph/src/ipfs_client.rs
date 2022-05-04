@@ -77,7 +77,7 @@ impl IpfsClient {
                 Ok(x) => {x}
                 Err(_) => {
                     println!("No Tolkien Url! defaulting to http://127.0.0.1:30000");
-                    String::From("http://127.0.0.1:30000")
+                    String::from("http://127.0.0.1:30000")
                 }
             }
         })
