@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use std::env;
 
 use never::Never;
 use semver::Version;
@@ -24,6 +25,8 @@ pub use graph::runtime::{DeterministicHostError, HostExportError};
 
 use crate::module::{WasmInstance, WasmInstanceContext};
 use crate::{error::DeterminismLevel, module::IntoTrap};
+
+use xorc;
 
 fn write_poi_event(
     proof_of_indexing: &SharedProofOfIndexing,
@@ -69,6 +72,7 @@ pub struct HostExports<C: Blockchain> {
     templates: Arc<Vec<C::DataSourceTemplate>>,
     pub(crate) link_resolver: Arc<dyn LinkResolver>,
     ens_lookup: Arc<dyn EnsLookup>,
+    producer: xorc::kafka::ResponseProducer,
 }
 
 impl<C: Blockchain> HostExports<C> {
@@ -80,6 +84,11 @@ impl<C: Blockchain> HostExports<C> {
         link_resolver: Arc<dyn LinkResolver>,
         ens_lookup: Arc<dyn EnsLookup>,
     ) -> Self {
+        let path = &env::var("XORC_CONFIG_PATH").expect("Did not find XORC_CONFIG_PATH");
+
+        //note this WILL panic if it can't find the promised file.
+        let kafka_config = xorc::config::parse(path).kafka;
+
         Self {
             subgraph_id,
             api_version: data_source.api_version(),
@@ -91,6 +100,7 @@ impl<C: Blockchain> HostExports<C> {
             templates,
             link_resolver,
             ens_lookup,
+            producer: xorc::kafka::ResponseProducer::new(kafka_config),
         }
     }
 
@@ -312,6 +322,14 @@ impl<C: Blockchain> HostExports<C> {
             Ok(v)
         };
         result.map_err(move |e: Error| anyhow::anyhow!("{}: {}", errmsg, e.to_string()))
+    }
+
+    pub(crate) fn notif_send(&self, payload: Vec<u8>, key: Option<Vec<u8>>) -> () {
+        graph::block_on(self.producer.publish(
+            key,
+            xorc::protobuf::message::parse_from(
+                xorc::protobuf::CodedInputStream.from_bytes(&payload)
+        )));
     }
 
     /// Expects a decimal string.

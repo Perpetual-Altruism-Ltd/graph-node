@@ -1095,6 +1095,33 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         }
     }
 
+    pub fn notif_send(
+        &mut self,
+        gas: &GasCounter,
+        ptr_payload: AscPtr<Uint8Array>,
+        ptr_key: AscPtr<Uint8Array>,
+    ) -> Result<(),HostExportError> {
+
+        if !self.experimental_features.allow_non_deterministic_ipfs {
+            return Err(HostExportError::Deterministic(anyhow!(
+                "Notif send is experimental."
+            )));
+        }
+
+        let payload: Vec<u8> = asc_get(self,ptr_payload,gas)?;
+
+        let key: Option<Vec<u8>> = match asc_get(self,ptr_key,gas) {
+            Ok(x) => {
+                Some(x)
+            }
+            Err(_) => {
+                None
+            }
+        };
+
+        Ok(self.ctx.host_exports.notif_send(payload,key));
+    }
+
     /// function ipfs.map(link: String, callback: String, flags: String[]): void
     pub fn ipfs_map(
         &mut self,
@@ -1201,7 +1228,7 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     }
 
     /// function crypto.keccak256(input: Bytes): Bytes
-    pub fn crypto_keccak_256(
+    pub fn crypto_keccak_256( // this is the way
         &mut self,
         gas: &GasCounter,
         input_ptr: AscPtr<Uint8Array>,
