@@ -53,6 +53,8 @@ ENV node_role "combined-node"
 ENV node_id "default"
 # The ethereum network polling interval  (in milliseconds)
 ENV ethereum_polling_interval ""
+# The Tolkien server to request from
+ENV TOLKIEN_URL ""
 
 # The location of an optional configuration file for graph-node, as
 # described in ../docs/config.md

@@ -5,9 +5,13 @@ use futures03::Stream;
 use http::header::CONTENT_LENGTH;
 use http::Uri;
 use reqwest::multipart;
-use serde::Deserialize;
+use serde::{Deserialize};
 use std::time::Duration;
 use std::{str::FromStr, sync::Arc};
+
+use cid;
+use cid::multihash::MultihashDigest;
+use std::env;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -32,6 +36,7 @@ pub struct AddResponse {
 pub struct IpfsClient {
     base: Arc<Uri>,
     client: Arc<reqwest::Client>,
+    tolkien_url: String,
 }
 
 impl CheapClone for IpfsClient {
@@ -39,22 +44,38 @@ impl CheapClone for IpfsClient {
         IpfsClient {
             base: self.base.cheap_clone(),
             client: self.client.cheap_clone(),
+            tolkien_url: self.tolkien_url.clone(),
+            //mongo: self.mongo.clone(),
+            //s3: self.s3.clone(),
         }
     }
 }
 
 impl IpfsClient {
     pub fn new(base: &str) -> Result<Self, Error> {
+
         Ok(IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str(base)?),
+            tolkien_url: match env::var("TOLKIEN_URL") {
+                Ok(x) => {x}
+                Err(_) => {
+                    println!("No Tolkien Url! defaulting to http://127.0.0.1:30000");
+                    String::from("http://127.0.0.1:30000")
+                }
+            }
         })
     }
 
     pub fn localhost() -> Self {
+
         IpfsClient {
             client: Arc::new(reqwest::Client::new()),
             base: Arc::new(Uri::from_str("http://localhost:5001").unwrap()),
+            tolkien_url: match env::var("TOLKIEN_URL"){
+                Ok(x) => {x}
+                Err(_) => {String::from("http://127.0.0.1:30000")}
+            },
         }
     }
 
@@ -70,12 +91,69 @@ impl IpfsClient {
             .await
     }
 
+    //actually send the tolkien http request - wrapped in a separate function so that error types are easier to deal with.
+    pub async fn tolkien_call(&self, c_id: &String, timeout: Option<Duration>) -> Result<reqwest::Response,reqwest::Error> {
+        let mut a =self.client.get(format!("{}{}{}",self.tolkien_url,"/api/ipfs/",c_id));
+        if let Some(x) = timeout {
+            a = a.timeout(x);
+        }
+        let b= a.send().await?.error_for_status()?;
+        return Ok(b);
+    }
+
+    //Queries Tolkien via https
+    pub async fn tolkien_cat(&self, c_id: &String, timeout: Duration) -> Result<Bytes,anyhow::Error> {
+
+        let ipfs_cid = cid::CidGeneric::<64>::from_str(c_id)?;
+
+        if ipfs_cid.codec() != 0x55 {
+            return Err(anyhow::anyhow!("Codec other than RAW not supported."));
+        }
+
+        let res = self.tolkien_call(c_id,Some(timeout,));
+        //^ this starts the call after that preliminary check - where most invalid should fail.
+
+        let mh = ipfs_cid.hash();
+
+        let code_result = cid::multihash::Code::try_from(mh.code());
+
+        let code_val = match code_result{
+            Ok(c) => {c},
+            Err(_) => {return Err(anyhow::anyhow!("Failed to parse hash's code"));}
+        };
+
+        let res_string = match res.await {
+            Ok(x)=>{
+                x.text().await?
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!("Failed to get "));
+            }
+        };
+
+        let digest = code_val.digest(res_string.as_bytes()); //no idea why clion isn't showing up the typing here?
+
+        return if digest.eq(mh) {
+            Ok(Bytes::from(res_string))
+        }
+        else{
+            Err(anyhow::anyhow!("Hashes do not match."))
+        };
+    }
+
     /// Download the entire contents.
     pub async fn cat_all(&self, cid: String, timeout: Duration) -> Result<Bytes, reqwest::Error> {
-        self.call(self.url("cat", cid), None, Some(timeout))
-            .await?
-            .bytes()
-            .await
+        return match self.tolkien_cat(&cid,timeout.clone()).await{
+            Ok(x)=>{
+                Ok(x)
+            }
+            Err(_)=>{
+                Ok(self.call(self.url("cat", cid), None, Some(timeout))
+                .await?
+                .bytes()
+                .await?)
+            }
+        }
     }
 
     pub async fn cat(
