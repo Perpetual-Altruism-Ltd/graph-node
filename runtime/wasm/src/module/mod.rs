@@ -1091,11 +1091,11 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         // Note on gas: There is no gas costing for the ipfs call itself,
         // since it's not enabled on the network.
 
-        if !self.experimental_features.allow_non_deterministic_ipfs {
+        /*if !self.experimental_features.allow_non_deterministic_ipfs {
             return Err(HostExportError::Deterministic(anyhow!(
                 "`ipfs.cat` is deprecated. Improved support for IPFS will be added in the future"
             )));
-        }
+        }*/
 
         let link = asc_get(self, link_ptr, gas)?;
         let ipfs_res = self.ctx.host_exports.ipfs_cat(&self.ctx.logger, link);
@@ -1205,12 +1205,12 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         // Note on gas:
         // Ideally we would consume gas the same as ipfs_cat and then share
         // gas across the spawned modules for callbacks.
-
+        /*
         if !self.experimental_features.allow_non_deterministic_ipfs {
             return Err(HostExportError::Deterministic(anyhow!(
                 "`ipfs.map` is deprecated. Improved support for IPFS will be added in the future"
             )));
-        }
+        }*/
 
         let link: String = asc_get(self, link_ptr, gas)?;
         let callback: String = asc_get(self, callback, gas)?;
@@ -1672,11 +1672,11 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         drop(gas);
 
         // This is unrelated to IPFS, but piggyback on the config to disallow it on the network.
-        if !self.experimental_features.allow_non_deterministic_ipfs {
+        /*if !self.experimental_features.allow_non_deterministic_ipfs {
             return Err(HostExportError::Deterministic(anyhow!(
                 "`ens_name_by_hash` is deprecated"
             )));
-        }
+        }*/
 
         let hash: String = asc_get(self, hash_ptr, gas)?;
         let name = self.ctx.host_exports.ens_name_by_hash(&*hash)?;
