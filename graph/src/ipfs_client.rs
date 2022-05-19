@@ -79,13 +79,13 @@ impl IpfsClient {
         }
     }
 
-    /// Calls `files stat`.
+    /// Calls `object stat`.
     pub async fn object_stat(
         &self,
         path: String,
         timeout: Duration,
     ) -> Result<ObjectStatResponse, reqwest::Error> {
-        self.call(self.url("files/stat", path), None, Some(timeout))
+        self.call(self.url("object/stat", path), None, Some(timeout))
             .await?
             .json()
             .await
