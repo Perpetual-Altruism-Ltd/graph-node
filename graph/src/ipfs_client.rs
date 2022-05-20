@@ -218,7 +218,7 @@ impl IpfsClient {
         form: Option<multipart::Form>,
         timeout: Option<Duration>,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        let mut req = self.client.get(&url);
+        let mut req = self.client.post(&url);
         if let Some(form) = form {
             req = req.multipart(form);
         } else {
