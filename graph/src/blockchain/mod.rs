@@ -32,7 +32,7 @@ use slog::Logger;
 use slog::{self, SendSyncRefUnwindSafeKV};
 use std::{
     any::Any,
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     convert::TryFrom,
     fmt::{self, Debug},
     str::FromStr,
@@ -224,7 +224,7 @@ pub trait DataSource<C: Blockchain>:
     fn as_stored_dynamic_data_source(&self) -> StoredDynamicDataSource;
 
     fn from_stored_dynamic_data_source(
-        templates: &BTreeMap<&str, &C::DataSourceTemplate>,
+        template: &C::DataSourceTemplate,
         stored: StoredDynamicDataSource,
     ) -> Result<Self, Error>;
 
@@ -312,22 +312,26 @@ pub trait NodeCapabilities<C: Blockchain> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockchainKind {
+    /// Arweave chains that are compatible.
+    Arweave,
+
     /// Ethereum itself or chains that are compatible.
     Ethereum,
 
     /// NEAR chains (Mainnet, Testnet) or chains that are compatible
     Near,
 
-    /// Tendermint chains including cosmoshub
-    Tendermint,
+    /// Cosmos chains
+    Cosmos,
 }
 
 impl fmt::Display for BlockchainKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let value = match self {
+            BlockchainKind::Arweave => "arweave",
             BlockchainKind::Ethereum => "ethereum",
             BlockchainKind::Near => "near",
-            BlockchainKind::Tendermint => "tendermint",
+            BlockchainKind::Cosmos => "cosmos",
         };
         write!(f, "{}", value)
     }
@@ -338,9 +342,10 @@ impl FromStr for BlockchainKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "arweave" => Ok(BlockchainKind::Arweave),
             "ethereum" => Ok(BlockchainKind::Ethereum),
             "near" => Ok(BlockchainKind::Near),
-            "tendermint" => Ok(BlockchainKind::Tendermint),
+            "cosmos" => Ok(BlockchainKind::Cosmos),
             _ => Err(anyhow!("unknown blockchain kind {}", s)),
         }
     }

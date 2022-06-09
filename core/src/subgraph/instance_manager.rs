@@ -39,6 +39,13 @@ impl<S: SubgraphStore> SubgraphInstanceManagerTrait for SubgraphInstanceManager<
 
         let subgraph_start_future = async move {
             match BlockchainKind::from_manifest(&manifest)? {
+                BlockchainKind::Arweave => {
+                    instance_manager
+                        .start_subgraph_inner::<graph_chain_arweave::Chain>(
+                            logger, loc, manifest, stop_block,
+                        )
+                        .await
+                }
                 BlockchainKind::Ethereum => {
                     instance_manager
                         .start_subgraph_inner::<graph_chain_ethereum::Chain>(
@@ -53,9 +60,9 @@ impl<S: SubgraphStore> SubgraphInstanceManagerTrait for SubgraphInstanceManager<
                         )
                         .await
                 }
-                BlockchainKind::Tendermint => {
+                BlockchainKind::Cosmos => {
                     instance_manager
-                        .start_subgraph_inner::<graph_chain_tendermint::Chain>(
+                        .start_subgraph_inner::<graph_chain_cosmos::Chain>(
                             logger, loc, manifest, stop_block,
                         )
                         .await
@@ -151,13 +158,9 @@ impl<S: SubgraphStore> SubgraphInstanceManager<S> {
             .await
             .context("Failed to resolve subgraph from IPFS")?;
 
-            let data_sources = load_dynamic_data_sources::<C>(
-                store.clone(),
-                logger.clone(),
-                manifest.templates.clone(),
-            )
-            .await
-            .context("Failed to load dynamic data sources")?;
+            let data_sources = load_dynamic_data_sources(store.clone(), logger.clone(), &manifest)
+                .await
+                .context("Failed to load dynamic data sources")?;
 
             info!(logger, "Successfully resolved subgraph files using IPFS");
 

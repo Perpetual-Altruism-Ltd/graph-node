@@ -62,6 +62,10 @@ impl QueryResults {
         self.results.iter().any(|result| result.has_errors())
     }
 
+    pub fn not_found(&self) -> bool {
+        self.results.iter().any(|result| result.not_found())
+    }
+
     pub fn deployment_hash(&self) -> Option<&DeploymentHash> {
         self.results
             .iter()
@@ -184,7 +188,7 @@ impl QueryResults {
 }
 
 /// The result of running a query, if successful.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct QueryResult {
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -222,6 +226,15 @@ impl QueryResult {
         !self.errors.is_empty()
     }
 
+    pub fn not_found(&self) -> bool {
+        self.errors.iter().any(|e| {
+            matches!(
+                e,
+                QueryError::ExecutionError(QueryExecutionError::DeploymentNotFound(_))
+            )
+        })
+    }
+
     pub fn has_data(&self) -> bool {
         self.data.is_some()
     }
@@ -248,6 +261,10 @@ impl QueryResult {
 
     pub fn errors_mut(&mut self) -> &mut Vec<QueryError> {
         &mut self.errors
+    }
+
+    pub fn data(&self) -> Option<&Data> {
+        self.data.as_ref()
     }
 }
 
@@ -320,9 +337,8 @@ fn multiple_data_items() {
     use serde_json::json;
 
     fn make_obj(key: &str, value: &str) -> Arc<QueryResult> {
-        let mut map = Object::new();
-        map.insert(key.to_owned(), r::Value::String(value.to_owned()));
-        Arc::new(map.into())
+        let obj = Object::from_iter([(key.to_owned(), r::Value::String(value.to_owned()))]);
+        Arc::new(obj.into())
     }
 
     let obj1 = make_obj("key1", "value1");

@@ -39,7 +39,9 @@ pub struct EnvVarsStore {
     /// When enabled, turns `ORDER BY id` into `ORDER BY id, block_range` in
     /// some relational queries.
     ///
-    /// Set by the flag `ORDER_BY_BLOCK_RANGE`.
+    /// Set by the flag `ORDER_BY_BLOCK_RANGE`. Not meant as a user-tunable,
+    /// only as an emergency setting for the hosted service. Remove after
+    /// 2022-07-01 if hosted service had no issues with it being `true`
     pub order_by_block_range: bool,
     /// When the flag is present, `ORDER BY` clauses are changed so that `asc`
     /// and `desc` ordering produces reverse orders. Setting the flag turns the
@@ -47,20 +49,6 @@ pub struct EnvVarsStore {
     ///
     /// Set by the flag `REVERSIBLE_ORDER_BY_OFF`.
     pub reversible_order_by_off: bool,
-    /// A list of fully qualified table names that contain entities that are
-    /// like accounts in that they have a relatively small number of entities,
-    /// with a large number of change for each entity. It is useful to treat
-    /// such tables special in queries by changing the clause that selects
-    /// for a specific block range in a way that makes the BRIN index on
-    /// block_range usable.
-    ///
-    /// The use of this environment variable is deprecated; use `graphman stats
-    /// account-like` instead.
-    ///
-    /// Set by the environment variable `GRAPH_ACCOUNT_TABLES` (comma
-    /// separated). Empty by default. E.g.
-    /// `GRAPH_ACCOUNT_TABLES=sgd21902.pair,sgd1708.things`.
-    pub account_tables: HashSet<String>,
     /// Whether to disable the notifications that feed GraphQL
     /// subscriptions. When the flag is set, no updates
     /// about entity changes will be sent to query nodes.
@@ -130,11 +118,6 @@ impl From<InnerStore> for EnvVarsStore {
             typed_children_set_size: x.typed_children_set_size,
             order_by_block_range: x.order_by_block_range.0,
             reversible_order_by_off: x.reversible_order_by_off.0,
-            account_tables: x
-                .account_tables
-                .split(',')
-                .map(|s| format!("\"{}\"", s.replace(".", "\".\"")))
-                .collect(),
             disable_subscription_notifications: x.disable_subscription_notifications.0,
             connection_try_always: x.connection_try_always.0,
             remove_unused_interval: chrono::Duration::minutes(
@@ -165,12 +148,10 @@ pub struct InnerStore {
     typea_batch_size: usize,
     #[envconfig(from = "TYPED_CHILDREN_SET_SIZE", default = "150")]
     typed_children_set_size: usize,
-    #[envconfig(from = "ORDER_BY_BLOCK_RANGE", default = "false")]
+    #[envconfig(from = "ORDER_BY_BLOCK_RANGE", default = "true")]
     order_by_block_range: EnvVarBoolean,
     #[envconfig(from = "REVERSIBLE_ORDER_BY_OFF", default = "false")]
     reversible_order_by_off: EnvVarBoolean,
-    #[envconfig(from = "GRAPH_ACCOUNT_TABLES", default = "")]
-    account_tables: String,
     #[envconfig(from = "GRAPH_DISABLE_SUBSCRIPTION_NOTIFICATIONS", default = "false")]
     disable_subscription_notifications: EnvVarBoolean,
     #[envconfig(from = "GRAPH_STORE_CONNECTION_TRY_ALWAYS", default = "false")]

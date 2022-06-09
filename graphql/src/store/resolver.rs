@@ -109,10 +109,9 @@ impl StoreResolver {
     ) -> Result<BlockPtr, QueryExecutionError> {
         fn check_ptr(
             subgraph: DeploymentHash,
-            ptr: Option<BlockPtr>,
+            ptr: BlockPtr,
             min: BlockNumber,
         ) -> Result<BlockPtr, QueryExecutionError> {
-            let ptr = ptr.expect("we should have already checked that the subgraph exists");
             if ptr.number < min {
                 return Err(QueryExecutionError::ValueParseError(
                     "block.number".to_owned(),
@@ -125,10 +124,17 @@ impl StoreResolver {
             }
             Ok(ptr)
         }
+
+        let subgraph_block_ptr = store
+            .block_ptr()
+            .await
+            .map_err(Into::into)
+            .map(|ptr| ptr.expect("we should have already checked that the subgraph exists"));
+
         match bc {
             BlockConstraint::Hash(hash) => {
-                store
-                    .block_number(hash)
+                let ptr = store
+                    .block_number(&hash)
                     .map_err(Into::into)
                     .and_then(|number| {
                         number
@@ -138,11 +144,16 @@ impl StoreResolver {
                                     "no block with that hash found".to_owned(),
                                 )
                             })
-                            .map(|number| BlockPtr::from((hash, number as u64)))
-                    })
+                            .map(|number| BlockPtr::new(hash, number))
+                    })?;
+
+                subgraph_block_ptr.and_then(|subgraph_ptr| {
+                    check_ptr(subgraph, subgraph_ptr, ptr.number)?;
+                    Ok(ptr)
+                })
             }
             BlockConstraint::Number(number) => {
-                store.block_ptr().await.map_err(Into::into).and_then(|ptr| {
+                subgraph_block_ptr.and_then(|ptr| {
                     check_ptr(subgraph, ptr, number)?;
                     // We don't have a way here to look the block hash up from
                     // the database, and even if we did, there is no guarantee
@@ -153,16 +164,10 @@ impl StoreResolver {
                     Ok(BlockPtr::from((web3::types::H256::zero(), number as u64)))
                 })
             }
-            BlockConstraint::Min(number) => store
-                .block_ptr()
-                .await
-                .map_err(Into::into)
-                .and_then(|ptr| check_ptr(subgraph, ptr, number)),
-            BlockConstraint::Latest => {
-                store.block_ptr().await.map_err(Into::into).map(|ptr| {
-                    ptr.expect("we should have already checked that the subgraph exists")
-                })
+            BlockConstraint::Min(number) => {
+                subgraph_block_ptr.and_then(|ptr| check_ptr(subgraph, ptr, number))
             }
+            BlockConstraint::Latest => subgraph_block_ptr,
         }
     }
 
@@ -202,17 +207,17 @@ impl StoreResolver {
                 number: number,
                 __typename: BLOCK_FIELD_TYPE
             };
-            map.insert("prefetch:block".to_string(), r::Value::List(vec![block]));
+            map.insert("prefetch:block".into(), r::Value::List(vec![block]));
             map.insert(
-                "deployment".to_string(),
+                "deployment".into(),
                 r::Value::String(self.deployment.to_string()),
             );
             map.insert(
-                "hasIndexingErrors".to_string(),
+                "hasIndexingErrors".into(),
                 r::Value::Boolean(self.has_non_fatal_errors),
             );
             map.insert(
-                "__typename".to_string(),
+                "__typename".into(),
                 r::Value::String(META_FIELD_TYPE.to_string()),
             );
             return Ok((None, Some(r::Value::object(map))));
@@ -323,7 +328,7 @@ impl Resolver for StoreResolver {
             ErrorPolicy::Deny => {
                 let data = result.take_data();
                 let meta =
-                    data.and_then(|d| d.get("_meta").map(|m| ("_meta".to_string(), m.clone())));
+                    data.and_then(|mut d| d.remove("_meta").map(|m| ("_meta".to_string(), m)));
                 result.set_data(meta.map(|m| Object::from_iter(Some(m))));
             }
             ErrorPolicy::Allow => (),
