@@ -187,7 +187,7 @@ impl IpfsClient {
         format!("{}api/v0/{}?arg={}", self.base, route, arg)
     }
 
-    async fn call(
+    pub async fn call(
         &self,
         url: String,
         form: Option<multipart::Form>,
