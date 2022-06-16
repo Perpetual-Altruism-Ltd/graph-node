@@ -546,6 +546,20 @@ impl<C: Blockchain> WasmInstance<C> {
 
         link!("log.log", log_log, level, msg_ptr);
 
+        link!("notification.send", notif_send,
+            typ_et,
+            universe_ptr,
+            google_ptr,
+            apple_ptr,
+            webpush_ptr,
+            http_ptr,
+            title_ptr,
+            body_ptr,
+            custom_key_ptr,
+            custom_data_ptr,
+            priority_ptr,
+            topic_ptr);
+
         // `arweave and `box` functionality was removed, but apiVersion <= 0.0.4 must link it.
         if api_version <= Version::new(0, 0, 4) {
             link!("arweave.transactionData", arweave_transaction_data, ptr);
@@ -1134,31 +1148,45 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         }
     }
 
+    //Not sure what else, than what it says on the tin.
     pub fn notif_send(
         &mut self,
         gas: &GasCounter,
-        ptr_payload: AscPtr<Uint8Array>,
-        ptr_key: AscPtr<Uint8Array>,
+        typ_et: u32,
+        universe_ptr: AscPtr<AscString>,
+        google_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        apple_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        webpush_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        http_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        title_ptr: AscPtr<AscString>,
+        body_ptr: AscPtr<AscString>,
+        custom_key_ptr: AscPtr<AscString>,
+        custom_data_ptr: AscPtr<AscString>,
+        priority_ptr: AscPtr<AscString>,
+        topic_ptr: AscPtr<AscString>,
     ) -> Result<(),HostExportError> {
 
-        if !self.experimental_features.allow_non_deterministic_ipfs {
-            return Err(HostExportError::Deterministic(anyhow!(
-                "Notif send is experimental."
-            )));
+        fn conv <T,E> (a: Result<T,E>) -> Option<T> {
+            match a {
+                Ok(t) => Some(t),
+                Err(_) => None
+            }
         }
 
-        let payload: Vec<u8> = asc_get(self,ptr_payload,gas)?;
-
-        let key: Option<Vec<u8>> = match asc_get(self,ptr_key,gas) {
-            Ok(x) => {
-                Some(x)
-            }
-            Err(_) => {
-                None
-            }
-        };
-
-        Ok(self.ctx.host_exports.notif_send(payload,key));
+        self.ctx.host_exports.notif_send(
+            u8::try_from(typ_et).map_err(|e| DeterministicHostError::from(Error::from(e)))?,
+            asc_get(self, universe_ptr, gas)?,
+            conv(asc_get(self, google_ptr, gas)),
+            conv(asc_get(self, apple_ptr, gas)),
+            conv(asc_get(self, webpush_ptr, gas)),
+            conv(asc_get(self, http_ptr, gas)),
+            conv(asc_get(self, title_ptr, gas)),
+            conv(asc_get(self, body_ptr, gas)),
+            conv(asc_get(self, custom_key_ptr, gas)),
+            conv(asc_get(self, custom_data_ptr, gas)),
+            conv(asc_get(self, priority_ptr, gas)),
+            conv(asc_get(self, topic_ptr, gas)),
+        )
     }
 
     /// function ipfs.map(link: String, callback: String, flags: String[]): void
