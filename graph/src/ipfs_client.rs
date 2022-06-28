@@ -143,7 +143,7 @@ impl IpfsClient {
 
     /// Download the entire contents.
     pub async fn cat_all(&self, cid: String, timeout: Duration) -> Result<Bytes, reqwest::Error> {
-        return match self.tolkien_cat(&cid,timeout.clone()).await{
+        /*return match self.tolkien_cat(&cid,timeout.clone()).await{
             Ok(x)=>{
                 Ok(x)
             }
@@ -153,7 +153,11 @@ impl IpfsClient {
                 .bytes()
                 .await?)
             }
-        }
+        }*/
+        Ok(self.call(self.url("cat", cid), None, Some(timeout))
+            .await?
+            .bytes()
+            .await?)
     }
 
     pub async fn cat(
