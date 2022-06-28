@@ -538,18 +538,12 @@ impl<C: Blockchain> WasmInstance<C> {
         link!("log.log", log_log, level, msg_ptr);
 
         link!("notification.send", notif_send,
-            typ_et,
-            universe_ptr,
+            options_ptr,
             google_ptr,
             apple_ptr,
             webpush_ptr,
             http_ptr,
-            title_ptr,
-            body_ptr,
-            custom_key_ptr,
-            custom_data_ptr,
-            priority_ptr,
-            topic_ptr);
+            typ_et);
 
         // `arweave and `box` functionality was removed, but apiVersion <= 0.0.4 must link it.
         if api_version <= Version::new(0, 0, 4) {
@@ -1113,19 +1107,14 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     pub fn notif_send(
         &mut self,
         gas: &GasCounter,
-        typ_et: u32,
-        universe_ptr: AscPtr<AscString>,
+        options_ptr: AscPtr<Array<AscPtr<AscString>>>,
         google_ptr: AscPtr<Array<AscPtr<AscString>>>,
         apple_ptr: AscPtr<Array<AscPtr<AscString>>>,
         webpush_ptr: AscPtr<Array<AscPtr<AscString>>>,
         http_ptr: AscPtr<Array<AscPtr<AscString>>>,
-        title_ptr: AscPtr<AscString>,
-        body_ptr: AscPtr<AscString>,
-        custom_key_ptr: AscPtr<AscString>,
-        custom_data_ptr: AscPtr<AscString>,
-        priority_ptr: AscPtr<AscString>,
-        topic_ptr: AscPtr<AscString>,
+        typ_et: u32,
     ) -> Result<(),HostExportError> {
+        //options order: universe, title, body, custom key, custom data, priority, topic
 
         fn conv <T,E> (a: Result<T,E>) -> Option<T> {
             match a {
@@ -1133,20 +1122,35 @@ impl<C: Blockchain> WasmInstanceContext<C> {
                 Err(_) => None
             }
         }
+        fn cl(a: Option<&String> ) -> Option<String> {
+            match a {
+                Some(t) => {
+                    Some(t.to_owned().clone())
+                }
+                None => {
+                    None
+                }
+            }
+        }
+
+        let options: Vec<String> = asc_get(self, options_ptr, gas)?;
 
         self.ctx.host_exports.notif_send(
             u8::try_from(typ_et).map_err(|e| DeterministicHostError::from(Error::from(e)))?,
-            asc_get(self, universe_ptr, gas)?,
+            match options.get(0){
+                Some(t) => t.to_owned().clone(),
+                None => {String::from("application")}
+            },
             conv(asc_get(self, google_ptr, gas)),
             conv(asc_get(self, apple_ptr, gas)),
             conv(asc_get(self, webpush_ptr, gas)),
             conv(asc_get(self, http_ptr, gas)),
-            conv(asc_get(self, title_ptr, gas)),
-            conv(asc_get(self, body_ptr, gas)),
-            conv(asc_get(self, custom_key_ptr, gas)),
-            conv(asc_get(self, custom_data_ptr, gas)),
-            conv(asc_get(self, priority_ptr, gas)),
-            conv(asc_get(self, topic_ptr, gas)),
+            cl(options.get(1)),
+            cl(options.get(2)),
+            cl(options.get(3)),
+            cl(options.get(4)),
+            cl(options.get(5)),
+            cl(options.get(6)),
         )
     }
 
