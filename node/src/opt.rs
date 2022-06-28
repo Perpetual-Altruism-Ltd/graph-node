@@ -103,7 +103,9 @@ pub struct Opt {
     #[structopt(
         long,
         value_name = "HOST:PORT",
+        use_delimiter = true,
         env = "IPFS",
+        use_delimiter = true,
         help = "HTTP addresses of IPFS nodes"
     )]
     pub ipfs: Vec<String>,

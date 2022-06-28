@@ -546,6 +546,14 @@ impl<C: Blockchain> WasmInstance<C> {
 
         link!("log.log", log_log, level, msg_ptr);
 
+        link!("notification.send", notif_send,
+            options_ptr,
+            google_ptr,
+            apple_ptr,
+            webpush_ptr,
+            http_ptr,
+            typ_et);
+
         // `arweave and `box` functionality was removed, but apiVersion <= 0.0.4 must link it.
         if api_version <= Version::new(0, 0, 4) {
             link!("arweave.transactionData", arweave_transaction_data, ptr);
@@ -1083,11 +1091,11 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         // Note on gas: There is no gas costing for the ipfs call itself,
         // since it's not enabled on the network.
 
-        if !self.experimental_features.allow_non_deterministic_ipfs {
+        /*if !self.experimental_features.allow_non_deterministic_ipfs {
             return Err(HostExportError::Deterministic(anyhow!(
                 "`ipfs.cat` is deprecated. Improved support for IPFS will be added in the future"
             )));
-        }
+        }*/
 
         let link = asc_get(self, link_ptr, gas)?;
         let ipfs_res = self.ctx.host_exports.ipfs_cat(&self.ctx.logger, link);
@@ -1103,6 +1111,59 @@ impl<C: Blockchain> WasmInstanceContext<C> {
             }
         }
     }
+
+    //Not sure what else, than what it says on the tin.
+    pub fn notif_send(
+        &mut self,
+        gas: &GasCounter,
+        options_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        google_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        apple_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        webpush_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        http_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        typ_et: u32,
+    ) -> Result<(),HostExportError> {
+        //options order: universe, title, body, custom key, custom data, priority, topic
+
+        fn conv <T,E> (a: Result<T,E>) -> Option<T> {
+            match a {
+                Ok(t) => Some(t),
+                Err(_) => None
+            }
+        }
+        fn cl(a: Option<&String> ) -> Option<String> {
+            match a {
+                Some(t) => {
+                    Some(t.to_owned().clone())
+                }
+                None => {
+                    None
+                }
+            }
+        }
+
+        let options: Vec<String> = asc_get(self, options_ptr, gas)?;
+
+        self.ctx.host_exports.notif_send(
+            u8::try_from(typ_et).map_err(|e| DeterministicHostError::from(Error::from(e)))?,
+            match options.get(0){
+                Some(t) => t.to_owned().clone(),
+                None => {String::from("application")}
+            },
+            conv(asc_get(self, google_ptr, gas)),
+            conv(asc_get(self, apple_ptr, gas)),
+            conv(asc_get(self, webpush_ptr, gas)),
+            conv(asc_get(self, http_ptr, gas)),
+            cl(options.get(1)),
+            cl(options.get(2)),
+            cl(options.get(3)),
+            cl(options.get(4)),
+            cl(options.get(5)),
+            cl(options.get(6)),
+        )
+    }
+
+
 
     /// function ipfs.getBlock(link: String): Bytes
     pub fn ipfs_get_block(
@@ -1146,12 +1207,12 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         // Note on gas:
         // Ideally we would consume gas the same as ipfs_cat and then share
         // gas across the spawned modules for callbacks.
-
+        /*
         if !self.experimental_features.allow_non_deterministic_ipfs {
             return Err(HostExportError::Deterministic(anyhow!(
                 "`ipfs.map` is deprecated. Improved support for IPFS will be added in the future"
             )));
-        }
+        }*/
 
         let link: String = asc_get(self, link_ptr, gas)?;
         let callback: String = asc_get(self, callback, gas)?;
@@ -1240,7 +1301,7 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     }
 
     /// function crypto.keccak256(input: Bytes): Bytes
-    pub fn crypto_keccak_256(
+    pub fn crypto_keccak_256( // this is the way
         &mut self,
         gas: &GasCounter,
         input_ptr: AscPtr<Uint8Array>,
@@ -1613,11 +1674,11 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         drop(gas);
 
         // This is unrelated to IPFS, but piggyback on the config to disallow it on the network.
-        if !self.experimental_features.allow_non_deterministic_ipfs {
+        /*if !self.experimental_features.allow_non_deterministic_ipfs {
             return Err(HostExportError::Deterministic(anyhow!(
                 "`ens_name_by_hash` is deprecated"
             )));
-        }
+        }*/
 
         let hash: String = asc_get(self, hash_ptr, gas)?;
         let name = self.ctx.host_exports.ens_name_by_hash(&*hash)?;

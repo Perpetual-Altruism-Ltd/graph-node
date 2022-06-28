@@ -172,6 +172,16 @@ impl LinkResolverTrait for LinkResolver {
         }
         trace!(logger, "IPFS cache miss"; "hash" => &path);
 
+        let dat = self.clients.get(0);
+        if let Some(cli) = dat {
+            let byt = cli.tolkien_cat(&path.clone(),Duration::from_secs(3)).await;
+            if let Ok(x) = byt {
+                return Ok(Vec::<u8>::from(x.as_ref()));
+            }
+        }
+
+
+
         let (size, client) = select_fastest_client_with_stat(
             self.clients.cheap_clone(),
             logger.cheap_clone(),

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+use std::env;
 
 use never::Never;
 use semver::Version;
@@ -17,13 +18,41 @@ use graph::data::store;
 use graph::ensure;
 use graph::prelude::ethabi::param_type::Reader;
 use graph::prelude::ethabi::{decode, encode, Token};
-use graph::prelude::serde_json;
+use graph::prelude::{serde_json};
 use graph::prelude::{slog::b, slog::record_static, *};
 use graph::runtime::gas::{self, complexity, Gas, GasCounter};
 pub use graph::runtime::{DeterministicHostError, HostExportError};
 
 use crate::module::{WasmInstance, WasmInstanceContext};
 use crate::{error::DeterminismLevel, module::IntoTrap};
+
+use rdkafka::{
+    config::ClientConfig,
+    producer::future_producer::{
+        FutureProducer,
+        FutureRecord,
+    },
+};
+
+use common::events::{
+    apple_notification::{AppleNotification, ApnsHeaders, AppleLocalizedAlert, CustomData},
+    webpush_notification::WebPushNotification,
+    rpc::Request,
+    push_notification::PushNotification,
+    google_notification::{GoogleNotification, GoogleLocalizedAlert, GoogleMessage, GoogleNotification_Priority},
+    http_request::{HttpRequest, HttpRequest_HttpVerb::POST},
+};
+
+use protobuf::Message;
+
+/*
+#[derive(Deserialize, Debug)]
+struct NotifServerResponse {
+    apple: Vec<String>,
+    google: Vec<String>,
+    webpush: Vec<String>,
+    http: Vec<String>,
+}*/ // TODO: delete.
 
 fn write_poi_event(
     proof_of_indexing: &SharedProofOfIndexing,
@@ -69,6 +98,9 @@ pub struct HostExports<C: Blockchain> {
     templates: Arc<Vec<C::DataSourceTemplate>>,
     pub(crate) link_resolver: Arc<dyn LinkResolver>,
     ens_lookup: Arc<dyn EnsLookup>,
+    producer: FutureProducer,
+    auth: Option<String>,
+    p256dh: Option<String>,
 }
 
 impl<C: Blockchain> HostExports<C> {
@@ -80,6 +112,26 @@ impl<C: Blockchain> HostExports<C> {
         link_resolver: Arc<dyn LinkResolver>,
         ens_lookup: Arc<dyn EnsLookup>,
     ) -> Self {
+        //let kafka_server = &env::var("KAFKA_SERVER").expect("Did not find KAFKA_SERVER");
+
+        let kaf_producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", "localhost:9092")
+            .set("produce.offset.report", "true")
+            .create()
+            .expect("Producer creation error");
+
+        let au = match env::var("WEBPUSH_AUTH"){
+            Ok(t) => Some(t),
+            Err(_) => None,
+        };
+
+        let pdh = match env::var("WEBPUSH_P256DH"){
+            Ok(t) => Some(t),
+            Err(_) => None,
+        };
+
+
+
         Self {
             subgraph_id,
             api_version: data_source.api_version(),
@@ -91,6 +143,9 @@ impl<C: Blockchain> HostExports<C> {
             templates,
             link_resolver,
             ens_lookup,
+            producer: kaf_producer,
+            auth: au,
+            p256dh: pdh
         }
     }
 
@@ -323,6 +378,411 @@ impl<C: Blockchain> HostExports<C> {
             Ok(v)
         };
         result.map_err(move |e: Error| anyhow::anyhow!("{}: {}", errmsg, e.to_string()))
+    }
+
+    pub(crate) fn notif_send(
+        &self,
+        typ: u8,
+        universe: String,
+        google: Option<Vec<String>>,
+        apple: Option<Vec<String>>,
+        webpush: Option<Vec<String>>,
+        http: Option<Vec<String>>,
+        title: Option<String>,
+        body: Option<String>,
+        custom_key: Option<String>,
+        custom_data: Option<String>,
+        priority: Option<String>,
+        topic: Option<String>,
+        )
+        -> Result<(),HostExportError>
+    {
+
+        if let Some(apl) = apple {
+            for device_id in apl.iter() {
+                let mut request = match typ {
+                    0 => {
+                        let mut req = AppleNotification::new();
+
+                        let mut content = AppleLocalizedAlert::new();
+
+                        match &title {
+                            Some(t) => {content.set_title(t.clone())}
+                            None => {}
+                        }
+
+                        match &body {
+                            Some(t) => {
+                                content.set_body(t.clone());
+                            }
+                            None => {}
+                        }
+
+                        req.set_localized(content);
+
+                        req
+                    },
+                    1 => {
+                        let mut req = AppleNotification::new();
+
+                        match &body {
+                            Some(t) => {req.set_plain(t.clone())}
+                            None => {}
+                        }
+
+                        req
+
+                    }
+                    _ => {
+                        let mut noti = AppleNotification::new();
+                        noti.set_silent(0);
+                        noti
+                    }
+                };
+
+                let mut headers = ApnsHeaders::new();
+
+                let time  = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH){
+                    Ok(x) => {
+                        match x.checked_add(Duration::from_secs(4*7*24*60*60)){ //4 weeks.
+                            Some(t) => {match i64::try_from(t.as_secs()){
+                                Ok(x) => x,
+                                Err(_) => return Err(HostExportError::Unknown(anyhow!("Failed to convert u64 => i64 for unix time.")))
+                            }},
+                            None => return Err(HostExportError::Unknown(anyhow!("failed to add time.")))
+                        }
+                    }
+                    Err(_) => {return Err(HostExportError::Unknown(anyhow!("Failed to get unix time.")))}
+                };
+
+                headers.set_apns_expiration(time);
+
+                match &topic {
+                    Some(t) => {headers.set_apns_topic(t.clone())}
+                    None => {}
+                }
+
+                match &priority {
+                    Some(t) => {
+                        let pri = match u32::from_str(t) {
+                            Ok(t) => t,
+                            Err(_) => 0
+                        };
+                        headers.set_apns_priority(pri);
+                    }
+                    None => {}
+                }
+
+                request.set_headers(headers);
+
+                if let Some(key) = &custom_key {
+                    if let Some(dat) = &custom_data {
+                        let mut cus_dat = CustomData::new();
+                        cus_dat.set_key(key.clone());
+                        cus_dat.set_body(dat.clone());
+                        request.set_custom_data(cus_dat);
+                    }
+                }
+
+                let mut noti_send = PushNotification::new();
+
+                noti_send.set_apple(request);
+
+                noti_send.set_device_token(device_id.clone());
+
+                let mut header = Request::new();
+                header.set_field_type("notification.PushNotification".to_string());
+
+                noti_send.set_header(header);
+
+                noti_send.set_universe(universe.clone());
+
+                let payload = match noti_send.write_to_bytes() {
+                    Ok(t) => t,
+                    Err(_) => return Err(HostExportError::Unknown(anyhow!("Failed to write bytes for a notification."))),
+                };
+
+
+
+                let record = FutureRecord {
+                    topic: "production.apns",
+                    partition: None,
+                    payload: Some(&payload),
+                    key: None,
+                    timestamp: None,
+                    headers: None,
+                };
+
+                match graph::block_on(self.producer.send::<Vec<u8>, Vec<u8>>(record, -1)){
+                    Ok(Ok(_)) =>  {},
+                    _ => {return Err(HostExportError::Unknown(anyhow!("Failed to do the notification.")))}
+                };
+            }; // end of apple notification loop
+
+        }
+
+        if let Some(goog) = google {
+            for device_id in goog.iter() {
+                let mut notification = GoogleNotification::new();
+                match &typ {
+                    0 => {
+                        let mut payload = GoogleLocalizedAlert::new();
+
+                        match &title {
+                            Some(t) => {
+                                payload.set_title(t.clone());
+                            }
+                            None => {}
+                        }
+
+                        match &body {
+                            Some(t) => {
+                                payload.set_body(t.clone());
+                            }
+                            None => {}
+                        }
+                        let mut map = HashMap::new();
+
+                        if let Some(t) = &topic {
+                            map.insert(String::from("topic"), t.clone());
+                        }
+
+                        if let Some(key) = &custom_key {
+                            if let Some(dat) = &custom_data {
+                                map.insert(key.clone(),dat.clone());
+                            }
+                        }
+
+                        map.insert(String::from("typ"),typ.to_string());
+
+                        payload.set_data(map);
+
+                        notification.set_localized(payload);
+
+                    }
+                    _ => {
+                        let mut payload = GoogleMessage::new();
+
+                        let mut map = HashMap::new();
+
+                        if let Some(t) = &title {
+                            map.insert(String::from("title"),t.clone());
+                        }
+
+                        if let Some(t) = &body {
+                            map.insert(String::from("body"),t.clone());
+                        }
+
+                        if let Some(t) = &topic {
+                            map.insert(String::from("topic"), t.clone());
+                        }
+
+                        if let Some(key) = &custom_key {
+                            if let Some(dat) = &custom_data {
+                                map.insert(key.clone(),dat.clone());
+                            }
+                        }
+
+                        map.insert(String::from("typ"),typ.to_string());
+
+                        payload.set_data(map);
+
+                        notification.set_message(payload);
+                    }
+
+
+                }
+                match &priority {
+                    Some(x) => {
+                        let a: &str = &x;
+                        if "10" == a {
+                            notification.set_priority(GoogleNotification_Priority::High);
+                        }
+                    }
+                    None => {}
+                };
+                let mut push_notification = PushNotification::new();
+
+                push_notification.set_google(notification);
+
+                push_notification.set_device_token(device_id.clone());
+
+                let mut header = Request::new();
+                header.set_field_type("notification.PushNotification".to_string());
+
+                push_notification.set_header(header);
+
+                push_notification.set_universe(universe.clone());
+
+                let payload = match push_notification.write_to_bytes() {
+                    Ok(t) => t,
+                    Err(_) => return Err(HostExportError::Unknown(anyhow!("Failed to write bytes for a notification."))),
+                };
+
+
+                let record = FutureRecord {
+                    topic: "production.fcm",
+                    partition: None,
+                    payload: Some(&payload),
+                    key: None,
+                    timestamp: None,
+                    headers: None,
+                };
+
+                match graph::block_on(self.producer.send::<Vec<u8>, Vec<u8>>(record, -1)){
+                    Ok(Ok(_)) =>  {},
+                    _ => {return Err(HostExportError::Unknown(anyhow!("Failed to do the notification.")))}
+                };
+            }// end of google notification loop
+        }
+
+        if let Some(au) = &(self.auth) {
+            if let Some(pdh) = &(self.p256dh) {
+                if let Some(wp) = webpush {
+                    for device_id in wp.iter() {
+                        let mut payload = HashMap::<String,String>::new();
+
+                        if let Some(t) = &title {
+                            payload.insert(String::from("title"),t.clone());
+                        }
+
+                        if let Some(t) = &body {
+                            payload.insert(String::from("body"),t.clone());
+                        }
+
+                        if let Some(key) = &custom_key {
+                            if let Some(dat) = &custom_data {
+                                payload.insert(key.clone(),dat.clone());
+                            }
+                        }
+
+                        if let Some(t) = &priority {
+                            payload.insert(String::from("priority"),t.clone());
+                        }
+
+                        if let Some(t) = &topic {
+                            payload.insert(String::from("topic"),t.clone());
+                        }
+
+                        let mut noti = WebPushNotification::new();
+
+                        let ser_payload = match serde_json::ser::to_string(&payload){
+                            Ok(t) => t,
+                            Err(_) => String::from("")
+                        };
+
+                        noti.set_payload(ser_payload);
+
+                        noti.set_ttl(7*24*60*60);
+
+                        noti.set_auth(au.clone());
+
+                        noti.set_p256dh(pdh.clone());
+
+                        let mut notif = PushNotification::new();
+
+                        let mut header = Request::new();
+                        header.set_field_type("notification.PushNotification".to_string());
+
+                        notif.set_header(header);
+
+                        notif.set_web(noti);
+
+                        notif.set_device_token(device_id.clone());
+
+                        notif.set_universe(universe.clone());
+
+                        let record_payload = match notif.write_to_bytes() {
+                            Ok(t) => t,
+                            Err(_) => return Err(HostExportError::Unknown(anyhow!("Failed to write bytes for a notification."))),
+                        };
+
+
+                        let record = FutureRecord {
+                            topic: "production.webpush",
+                            partition: None,
+                            payload: Some(&record_payload),
+                            key: None,
+                            timestamp: None,
+                            headers: None,
+                        };
+
+                        match graph::block_on(self.producer.send::<Vec<u8>, Vec<u8>>(record, -1)){
+                            Ok(Ok(_)) =>  {},
+                            _ => {return Err(HostExportError::Unknown(anyhow!("Failed to do the notification.")))}
+                        };
+                    }//end of webpush loop
+                }
+            }
+        }
+
+        if let Some(ht) = http {
+            for uri in ht {
+
+                let mut payload = HashMap::<String,String>::new();
+
+                if let Some(t) = &title {
+                    payload.insert(String::from("title"),t.clone());
+                }
+
+                if let Some(t) = &body {
+                    payload.insert(String::from("body"),t.clone());
+                }
+
+                if let Some(key) = &custom_key {
+                    if let Some(dat) = &custom_data {
+                        payload.insert(key.clone(),dat.clone());
+                    }
+                }
+
+                if let Some(t) = &priority {
+                    payload.insert(String::from("priority"),t.clone());
+                }
+
+                if let Some(t) = &topic {
+                    payload.insert(String::from("topic"),t.clone());
+                }
+
+                let ser_payload = match serde_json::ser::to_string(&payload){
+                    Ok(t) => t,
+                    Err(_) => String::from("")
+                };
+
+                let mut header = Request::new();
+                header.set_field_type("http.HttpRequest".to_string());
+
+                let mut request = HttpRequest::new();
+                request.set_header(header);
+
+                request.set_request_type(POST);
+
+                request.set_uri(uri.clone());
+
+                request.set_body(ser_payload);
+
+                let record_payload = match request.write_to_bytes() {
+                    Ok(t) => t,
+                    Err(_) => return Err(HostExportError::Unknown(anyhow!("Failed to write bytes for a notification."))),
+                };
+
+
+                let record = FutureRecord {
+                    topic: "production.http",
+                    partition: None,
+                    payload: Some(&record_payload),
+                    key: None,
+                    timestamp: None,
+                    headers: None,
+                };
+
+                match graph::block_on(self.producer.send::<Vec<u8>, Vec<u8>>(record, -1)){
+                    Ok(Ok(_)) =>  {},
+                    _ => {return Err(HostExportError::Unknown(anyhow!("Failed to do the notification.")))}
+                };
+            }//end of http loop
+        }
+
+        Ok(())
     }
 
     /// Expects a decimal string.
