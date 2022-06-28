@@ -9,6 +9,7 @@ use diesel::prelude::{
 };
 use diesel_derives::Associations;
 use git_testament::{git_testament, git_testament_macros};
+use graph::blockchain::BlockHash;
 use graph::data::subgraph::schema::{SubgraphError, SubgraphManifestEntity};
 use graph::prelude::{
     bigdecimal::ToPrimitive, BigDecimal, BlockPtr, DeploymentHash, StoreError,
@@ -116,7 +117,10 @@ impl TryFrom<ErrorDetail> for SubgraphError {
             block_range,
         } = value;
         let block_number = crate::block_range::first_block_in_range(&block_range);
-        let block_hash = block_hash.map(|hash| H256::from_slice(hash.as_slice()));
+        // FIXME:
+        //
+        // workaround for arweave
+        let block_hash = block_hash.map(|hash| H256::from_slice(&hash.as_slice()[..32]));
         // In existing databases, we have errors that have a `block_range` of
         // `UNVERSIONED_RANGE`, which leads to `None` as the block number, but
         // has a hash. Conversely, it is also possible for an error to not have a
@@ -144,21 +148,23 @@ pub(crate) fn block(
     hash: Option<Vec<u8>>,
     number: Option<BigDecimal>,
 ) -> Result<Option<status::EthereumBlock>, StoreError> {
-    match (&hash, &number) {
+    match (hash, number) {
         (Some(hash), Some(number)) => {
-            let hash = H256::from_slice(hash.as_slice());
-            let number = number.to_u64().ok_or_else(|| {
+            let number = number.to_i32().ok_or_else(|| {
                 constraint_violation!(
-                    "the block number {} for {} in {} is not representable as a u64",
+                    "the block number {} for {} in {} is not representable as an i32",
                     number,
                     name,
                     id
                 )
             })?;
-            Ok(Some(status::EthereumBlock::new(hash, number)))
+            Ok(Some(status::EthereumBlock::new(
+                BlockHash(hash.into_boxed_slice()),
+                number,
+            )))
         }
         (None, None) => Ok(None),
-        _ => Err(constraint_violation!(
+        (hash, number) => Err(constraint_violation!(
             "the hash and number \
         of a block pointer must either both be null or both have a \
         value, but for `{}` the hash of {} is `{:?}` and the number is `{:?}`",

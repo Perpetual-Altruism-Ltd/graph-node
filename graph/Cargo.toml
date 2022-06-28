@@ -26,9 +26,9 @@ graphql-parser = "0.4.0"
 lazy_static = "1.4.0"
 num-bigint = { version = "^0.2.6", features = ["serde"] }
 num_cpus = "1.13.1"
-num-traits = "0.2.14"
+num-traits = "0.2.15"
 rand = "0.8.4"
-semver = { version = "1.0.7", features = ["serde"] }
+semver = { version = "1.0.9", features = ["serde"] }
 serde = { version = "1.0.126", features = ["rc"] }
 serde_derive = "1.0.125"
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
@@ -41,17 +41,18 @@ strum_macros = "0.21.1"
 slog-async = "2.5.0"
 slog-envlogger = "2.1.0"
 slog-term = "2.7.0"
-petgraph = "0.6.0"
+petgraph = "0.6.2"
 tiny-keccak = "1.5.0"
 tokio = { version = "1.16.1", features = ["time", "sync", "macros", "test-util", "rt-multi-thread", "parking_lot"] }
 tokio-stream = { version = "0.1.8", features = ["sync"] }
 tokio-retry = "0.3.0"
 url = "2.2.1"
-prometheus = "0.13.0"
+prometheus = "0.13.1"
 priority-queue = "0.7.0"
-tonic = { version = "0.5.1", features = ["tls-roots"] }
-prost = "0.8.0"
-prost-types = "0.8.0"
+tonic = { version = "0.7.1", features = ["tls-roots"] }
+prost = "0.10.4"
+prost-types = "0.10.1"
+
 futures03 = { version = "0.3.1", package = "futures", features = ["compat"] }
 wasmparser = "0.78.2"
 thiserror = "1.0.25"
@@ -70,4 +71,4 @@ maplit = "1.0.2"
 structopt = { version = "0.3" }
 
 [build-dependencies]
-tonic-build = "0.5.1"
+tonic-build = { version = "0.7.2", features = ["prost"] }

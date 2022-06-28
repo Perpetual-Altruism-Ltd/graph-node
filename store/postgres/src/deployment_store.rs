@@ -38,6 +38,7 @@ use crate::block_range::block_number;
 use crate::catalog;
 use crate::deployment;
 use crate::detail::ErrorDetail;
+use crate::dynds::DataSourcesTable;
 use crate::relational::{Layout, LayoutCache, SqlName, Table};
 use crate::relational_queries::FromEntityData;
 use crate::{connection_pool::ConnectionPool, detail};
@@ -168,13 +169,7 @@ impl DeploymentStore {
 
             // Create (or update) the metadata. Update only happens in tests
             if replace || !exists {
-                deployment::create_deployment(
-                    &conn,
-                    &site,
-                    deployment,
-                    exists,
-                    replace,
-                )?;
+                deployment::create_deployment(&conn, &site, deployment, exists, replace)?;
             };
 
             // Create the schema for the subgraph data
@@ -189,12 +184,17 @@ impl DeploymentStore {
                     if !errors.is_empty() {
                         return Err(StoreError::Unknown(anyhow!(
                             "The subgraph `{}` cannot be used as the graft base \
-                                                    for `{}` because the schemas are incompatible:\n    - {}",
+                             for `{}` because the schemas are incompatible:\n    - {}",
                             &base.catalog.site.namespace,
                             &layout.catalog.site.namespace,
                             errors.join("\n    - ")
                         )));
                     }
+                }
+
+                // Create data sources table
+                if site.schema_version.private_data_sources() {
+                    conn.batch_execute(&DataSourcesTable::new(site.namespace.clone()).as_ddl())?;
                 }
             }
             Ok(())
@@ -215,7 +215,9 @@ impl DeploymentStore {
         let conn = self.get_conn()?;
         conn.transaction(|| {
             crate::deployment::drop_schema(&conn, &site.namespace)?;
-            crate::dynds::drop(&conn, &site.deployment)?;
+            if !site.schema_version.private_data_sources() {
+                crate::dynds::shared::drop(&conn, &site.deployment)?;
+            }
             crate::deployment::drop_metadata(&conn, site)
         })
     }
@@ -657,22 +659,26 @@ impl DeploymentStore {
     }
 
     /// Runs the SQL `ANALYZE` command in a table.
-    pub(crate) async fn analyze(
+    pub(crate) fn analyze(&self, site: Arc<Site>, entity_name: &str) -> Result<(), StoreError> {
+        let conn = self.get_conn()?;
+        self.analyze_with_conn(site, entity_name, &conn)
+    }
+
+    /// Runs the SQL `ANALYZE` command in a table, with a shared connection.
+    pub(crate) fn analyze_with_conn(
         &self,
         site: Arc<Site>,
         entity_name: &str,
+        conn: &PgConnection,
     ) -> Result<(), StoreError> {
         let store = self.clone();
         let entity_name = entity_name.to_owned();
-        self.with_conn(move |conn, _| {
-            let layout = store.layout(conn, site)?;
-            let table = resolve_table_name(&layout, &entity_name)?;
-            let table_name = &table.qualified_name;
-            let sql = format!("analyze {table_name}");
-            conn.execute(&sql)?;
-            Ok(())
-        })
-        .await
+        let layout = store.layout(&conn, site)?;
+        let table = resolve_table_name(&layout, &entity_name)?;
+        let table_name = &table.qualified_name;
+        let sql = format!("analyze {table_name}");
+        conn.execute(&sql)?;
+        Ok(())
     }
 
     /// Creates a new index in the specified Entity table if it doesn't already exist.
@@ -993,7 +999,7 @@ impl DeploymentStore {
             )?;
             section.end();
 
-            dynds::insert(&conn, &site.deployment, data_sources, block_ptr_to)?;
+            dynds::insert(&conn, &site, data_sources, block_ptr_to)?;
 
             if !deterministic_errors.is_empty() {
                 deployment::insert_subgraph_errors(
@@ -1066,7 +1072,7 @@ impl DeploymentStore {
             // importantly creation of dynamic data sources. We ensure in the
             // rest of the code that we only record history for those meta data
             // changes that might need to be reverted
-            Layout::revert_metadata(&conn, &site.deployment, block)?;
+            Layout::revert_metadata(&conn, &site, block)?;
 
             deployment::update_entity_count(
                 conn,
@@ -1168,11 +1174,11 @@ impl DeploymentStore {
 
     pub(crate) async fn load_dynamic_data_sources(
         &self,
-        id: DeploymentHash,
+        site: Arc<Site>,
         block: BlockNumber,
     ) -> Result<Vec<StoredDynamicDataSource>, StoreError> {
         self.with_conn(move |conn, _| {
-            conn.transaction(|| crate::dynds::load(&conn, id.as_str(), block))
+            conn.transaction(|| crate::dynds::load(&conn, &site, block))
                 .map_err(Into::into)
         })
         .await
@@ -1210,7 +1216,7 @@ impl DeploymentStore {
         site: Arc<Site>,
         graft_src: Option<(Arc<Layout>, BlockPtr)>,
     ) -> Result<(), StoreError> {
-        let dst = self.find_layout(site)?;
+        let dst = self.find_layout(site.cheap_clone())?;
 
         // Do any cleanup to bring the subgraph into a known good state
         if let Some((src, block)) = graft_src {
@@ -1272,6 +1278,11 @@ impl DeploymentStore {
                 deployment::set_entity_count(&conn, &dst.site, &dst.count_query)?;
                 info!(logger, "Counted the entities";
                       "time_ms" => start.elapsed().as_millis());
+
+                // Analyze all tables for this deployment
+                for entity_name in dst.tables.keys() {
+                    self.analyze_with_conn(site.cheap_clone(), entity_name.as_str(), &conn)?;
+                }
 
                 // Set the block ptr to the graft point to signal that we successfully
                 // performed the graft

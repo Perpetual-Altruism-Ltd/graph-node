@@ -4,6 +4,7 @@ mod traits;
 
 pub use cache::{CachedEthereumCall, EntityCache, ModificationsAndCache};
 pub use err::StoreError;
+use itertools::Itertools;
 use stable_hash::{FieldAddress, StableHash};
 use stable_hash_legacy::SequenceNumber;
 pub use traits::*;
@@ -22,7 +23,8 @@ use std::time::Duration;
 
 use crate::blockchain::DataSource;
 use crate::blockchain::{Block, Blockchain};
-use crate::data::{store::*, subgraph::Source};
+use crate::data::store::scalar::Bytes;
+use crate::data::store::*;
 use crate::prelude::*;
 
 /// The type name of an entity. This is the string that is used in the
@@ -193,6 +195,51 @@ pub enum EntityFilter {
     ChangeBlockGte(BlockNumber),
 }
 
+// A somewhat concise string representation of a filter
+impl fmt::Display for EntityFilter {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use EntityFilter::*;
+
+        match self {
+            And(fs) => {
+                write!(f, "{}", fs.iter().map(|f| f.to_string()).join(" and "))
+            }
+            Or(fs) => {
+                write!(f, "{}", fs.iter().map(|f| f.to_string()).join(" or "))
+            }
+            Equal(a, v) => write!(f, "{a} = {v}"),
+            Not(a, v) => write!(f, "{a} != {v}"),
+            GreaterThan(a, v) => write!(f, "{a} > {v}"),
+            LessThan(a, v) => write!(f, "{a} < {v}"),
+            GreaterOrEqual(a, v) => write!(f, "{a} >= {v}"),
+            LessOrEqual(a, v) => write!(f, "{a} <= {v}"),
+            In(a, vs) => write!(
+                f,
+                "{a} in ({})",
+                vs.into_iter().map(|v| v.to_string()).join(",")
+            ),
+            NotIn(a, vs) => write!(
+                f,
+                "{a} not in ({})",
+                vs.into_iter().map(|v| v.to_string()).join(",")
+            ),
+            Contains(a, v) => write!(f, "{a} ~ *{v}*"),
+            ContainsNoCase(a, v) => write!(f, "{a} ~ *{v}*i"),
+            NotContains(a, v) => write!(f, "{a} !~ *{v}*"),
+            NotContainsNoCase(a, v) => write!(f, "{a} !~ *{v}*i"),
+            StartsWith(a, v) => write!(f, "{a} ~ ^{v}*"),
+            StartsWithNoCase(a, v) => write!(f, "{a} ~ ^{v}*i"),
+            NotStartsWith(a, v) => write!(f, "{a} !~ ^{v}*"),
+            NotStartsWithNoCase(a, v) => write!(f, "{a} !~ ^{v}*i"),
+            EndsWith(a, v) => write!(f, "{a} ~ *{v}$"),
+            EndsWithNoCase(a, v) => write!(f, "{a} ~ *{v}$i"),
+            NotEndsWith(a, v) => write!(f, "{a} !~ *{v}$"),
+            NotEndsWithNoCase(a, v) => write!(f, "{a} !~ *{v}$i"),
+            ChangeBlockGte(b) => write!(f, "block >= {b}"),
+        }
+    }
+}
+
 // Define some convenience methods
 impl EntityFilter {
     pub fn new_equal(
@@ -317,7 +364,7 @@ pub enum EntityLink {
     /// The parent id is stored in this child attribute
     Direct(WindowAttribute, ChildMultiplicity),
     /// Join with the parents table to get at the parent id
-    Parent(ParentLink),
+    Parent(EntityType, ParentLink),
 }
 
 /// Window results of an `EntityQuery` query along the parent's id:
@@ -786,8 +833,8 @@ pub enum UnfailOutcome {
 #[derive(Clone)]
 pub struct StoredDynamicDataSource {
     pub name: String,
-    pub source: Source,
-    pub context: Option<String>,
+    pub param: Option<Bytes>,
+    pub context: Option<serde_json::Value>,
     pub creation_block: Option<BlockNumber>,
 }
 
@@ -992,5 +1039,48 @@ pub struct PartialBlockPtr {
 impl From<BlockNumber> for PartialBlockPtr {
     fn from(number: BlockNumber) -> Self {
         Self { number, hash: None }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeploymentSchemaVersion {
+    /// V0, baseline version, in which:
+    /// - A relational schema is used.
+    /// - Each deployment has its own namespace for entity tables.
+    /// - Dynamic data sources are stored in `subgraphs.dynamic_ethereum_contract_data_source`.
+    V0 = 0,
+
+    /// V1: Dynamic data sources moved to `sgd*.data_sources$`.
+    V1 = 1,
+}
+
+impl DeploymentSchemaVersion {
+    // Latest schema version supported by this version of graph node.
+    pub const LATEST: Self = Self::V0;
+
+    pub fn private_data_sources(self) -> bool {
+        use DeploymentSchemaVersion::*;
+        match self {
+            V0 => false,
+            V1 => true,
+        }
+    }
+}
+
+impl TryFrom<i32> for DeploymentSchemaVersion {
+    type Error = StoreError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::V0),
+            1 => Ok(Self::V1),
+            _ => Err(StoreError::UnsupportedDeploymentSchemaVersion(value)),
+        }
+    }
+}
+
+impl fmt::Display for DeploymentSchemaVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&(*self as i32), f)
     }
 }

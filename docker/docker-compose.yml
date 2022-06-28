@@ -23,7 +23,7 @@ services:
       GRAPH_LOG: info
       TOLKIEN_URL: "http://localhost:127.0.0.1"
   ipfs:
-    image: ipfs/go-ipfs:v0.4.23
+    image: ipfs/go-ipfs:v0.10.0
     ports:
       - '5001:5001'
     volumes:
@@ -41,5 +41,6 @@ services:
       POSTGRES_USER: graph-node
       POSTGRES_PASSWORD: let-me-in
       POSTGRES_DB: graph-node
+      PGDATA: "/data/postgres"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data

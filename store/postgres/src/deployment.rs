@@ -158,7 +158,10 @@ fn graft(
     match graft {
         (None, None, None) => Ok(None),
         (Some(subgraph), Some(hash), Some(block)) => {
-            let hash = H256::from_slice(hash.as_slice());
+            // FIXME:
+            //
+            // workaround for arweave
+            let hash = H256::from_slice(&hash.as_slice()[..32]);
             let block = block.to_u64().expect("block numbers fit into a u64");
             let subgraph = DeploymentHash::new(subgraph.clone()).map_err(|_| {
                 StoreError::Unknown(anyhow!(
@@ -953,6 +956,9 @@ pub fn create_deployment(
         m::features.eq(features),
         m::schema.eq(schema),
         m::graph_node_version_id.eq(graph_node_version_id),
+        // New subgraphs index only a prefix of bytea columns
+        // see: attr-bytea-prefix
+        m::use_bytea_prefix.eq(true),
     );
 
     if exists && replace {

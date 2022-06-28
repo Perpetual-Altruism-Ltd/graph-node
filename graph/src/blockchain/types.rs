@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use stable_hash::{FieldAddress, StableHash};
 use stable_hash_legacy::SequenceNumber;
 use std::convert::TryFrom;
@@ -44,6 +44,12 @@ impl fmt::Debug for BlockHash {
     }
 }
 
+impl fmt::LowerHex for BlockHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&hex::encode(&self.0))
+    }
+}
+
 impl CheapClone for BlockHash {}
 
 impl From<H256> for BlockHash {
@@ -63,10 +69,17 @@ impl TryFrom<&str> for BlockHash {
 
     fn try_from(hash: &str) -> Result<Self, Self::Error> {
         let hash = hash.trim_start_matches("0x");
-        let hash = hex::decode(hash)
-            .with_context(|| format!("Cannot parse H256 value from string `{}`", hash))?;
+        let hash = hex::decode(hash)?;
 
         Ok(BlockHash(hash.as_slice().into()))
+    }
+}
+
+impl FromStr for BlockHash {
+    type Err = anyhow::Error;
+
+    fn from_str(hash: &str) -> Result<Self, Self::Err> {
+        Self::try_from(hash)
     }
 }
 
@@ -120,8 +133,11 @@ impl BlockPtr {
         self.number
     }
 
+    // FIXME:
+    //
+    // workaround for arweave
     pub fn hash_as_h256(&self) -> H256 {
-        H256::from_slice(self.hash_slice())
+        H256::from_slice(&self.hash_slice()[..32])
     }
 
     pub fn hash_slice(&self) -> &[u8] {
@@ -215,10 +231,9 @@ impl TryFrom<(&str, i64)> for BlockPtr {
 
     fn try_from((hash, number): (&str, i64)) -> Result<Self, Self::Error> {
         let hash = hash.trim_start_matches("0x");
-        let hash = H256::from_str(hash)
-            .map_err(|e| anyhow!("Cannot parse H256 value from string `{}`: {}", hash, e))?;
+        let hash = BlockHash::from_str(hash)?;
 
-        Ok(BlockPtr::from((hash, number)))
+        Ok(BlockPtr::new(hash, number as i32))
     }
 }
 
@@ -245,9 +260,9 @@ impl TryFromValue for BlockPtr {
         match value {
             r::Value::Object(o) => {
                 let number = o.get_required::<BigInt>("number")?.to_u64() as BlockNumber;
-                let hash = o.get_required::<H256>("hash")?;
+                let hash = o.get_required::<BlockHash>("hash")?;
 
-                Ok(BlockPtr::from((hash, number)))
+                Ok(BlockPtr::new(hash, number))
             }
             _ => Err(anyhow!(
                 "failed to parse non-object value into BlockPtr: {:?}",

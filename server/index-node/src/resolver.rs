@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 
 use either::Either;
-use web3::types::{Address, H256};
+use web3::types::Address;
 
 use graph::blockchain::{Blockchain, BlockchainKind, BlockchainMap};
 use graph::components::store::{BlockStore, EntityType, Store};
@@ -156,7 +156,7 @@ impl<S: Store> IndexNodeResolver<S> {
             .expect("Valid network required");
 
         let block_hash = field
-            .get_required::<H256>("blockHash")
+            .get_required::<BlockHash>("blockHash")
             .expect("Valid blockHash required");
 
         let chain_store = if let Some(cs) = self.store.block_store().chain_store(&network) {
@@ -171,7 +171,7 @@ impl<S: Store> IndexNodeResolver<S> {
             return Ok(r::Value::Null);
         };
 
-        let blocks_res = chain_store.blocks(&[block_hash]);
+        let blocks_res = chain_store.blocks(&[block_hash.cheap_clone()]);
         Ok(match blocks_res {
             Ok(blocks) if blocks.is_empty() => {
                 error!(
@@ -208,7 +208,7 @@ impl<S: Store> IndexNodeResolver<S> {
             .expect("Valid network required");
 
         let block_hash = field
-            .get_required::<H256>("blockHash")
+            .get_required::<BlockHash>("blockHash")
             .expect("Valid blockHash required");
 
         let chain = if let Ok(c) = self
@@ -228,7 +228,7 @@ impl<S: Store> IndexNodeResolver<S> {
         let chain_store = chain.chain_store();
         let call_cache = chain.call_cache();
 
-        let block_number = match chain_store.block_number(block_hash) {
+        let block_number = match chain_store.block_number(&block_hash) {
             Ok(Some((_, n))) => n,
             Ok(None) => {
                 error!(
@@ -250,7 +250,7 @@ impl<S: Store> IndexNodeResolver<S> {
                 return Ok(r::Value::Null);
             }
         };
-        let block_ptr = BlockPtr::new(block_hash.into(), block_number);
+        let block_ptr = BlockPtr::new(block_hash.cheap_clone(), block_number);
 
         let calls = match call_cache.get_calls_in_block(block_ptr) {
             Ok(c) => c,
@@ -289,17 +289,17 @@ impl<S: Store> IndexNodeResolver<S> {
             .get_required::<DeploymentHash>("subgraph")
             .expect("Valid subgraphId required");
 
-        let block_number: u64 = field
-            .get_required::<u64>("blockNumber")
+        let block_number: i32 = field
+            .get_required::<i32>("blockNumber")
             .expect("Valid blockNumber required")
             .try_into()
             .unwrap();
 
         let block_hash = field
-            .get_required::<H256>("blockHash")
+            .get_required::<BlockHash>("blockHash")
             .expect("Valid blockHash required");
 
-        let block = BlockPtr::from((block_hash, block_number));
+        let block = BlockPtr::new(block_hash, block_number);
 
         let mut indexer = field
             .get_optional::<Address>("indexer")
@@ -475,9 +475,9 @@ impl<S: Store> IndexNodeResolver<S> {
                     .await?
                 }
 
-                BlockchainKind::Tendermint => {
+                BlockchainKind::Cosmos => {
                     let unvalidated_subgraph_manifest =
-                        UnvalidatedSubgraphManifest::<graph_chain_tendermint::Chain>::resolve(
+                        UnvalidatedSubgraphManifest::<graph_chain_cosmos::Chain>::resolve(
                             deployment_hash,
                             raw,
                             &self.link_resolver,
@@ -510,15 +510,35 @@ impl<S: Store> IndexNodeResolver<S> {
                     )
                     .await?
                 }
+
+                BlockchainKind::Arweave => {
+                    let unvalidated_subgraph_manifest =
+                        UnvalidatedSubgraphManifest::<graph_chain_arweave::Chain>::resolve(
+                            deployment_hash,
+                            raw,
+                            &self.link_resolver,
+                            &self.logger,
+                            ENV_VARS.max_spec_version.clone(),
+                        )
+                        .await?;
+
+                    validate_and_extract_features(
+                        &self.store.subgraph_store(),
+                        unvalidated_subgraph_manifest,
+                    )
+                    .await?
+                }
             }
         };
 
         // We then bulid a GraphqQL `Object` value that contains the feature detection and
         // validation results and send it back as a response.
-        let mut response = Object::new();
-        response.insert("features".to_string(), features);
-        response.insert("errors".to_string(), errors);
-        response.insert("network".to_string(), network);
+        let response = [
+            ("features".to_string(), features),
+            ("errors".to_string(), errors),
+            ("network".to_string(), network),
+        ];
+        let response = Object::from_iter(response);
 
         Ok(r::Value::Object(response))
     }
@@ -654,7 +674,7 @@ fn entity_changes_to_graphql(entity_changes: Vec<EntityOperation>) -> r::Value {
                         r::Value::object(
                             e.sorted()
                                 .into_iter()
-                                .map(|(name, value)| (name, value.into()))
+                                .map(|(name, value)| (name.into(), value.into()))
                                 .collect(),
                         )
                     })

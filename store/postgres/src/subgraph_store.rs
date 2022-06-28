@@ -34,6 +34,7 @@ use graph::{
 use crate::fork;
 use crate::{
     connection_pool::ConnectionPool,
+    deployment::SubgraphHealth,
     primary,
     primary::{DeploymentId, Mirror as PrimaryMirror, Site},
     relational::Layout,
@@ -997,13 +998,13 @@ impl SubgraphStoreInner {
         .await;
     }
 
-    pub async fn analyze(
+    pub fn analyze(
         &self,
         deployment: &DeploymentLocator,
         entity_name: &str,
     ) -> Result<(), StoreError> {
         let (store, site) = self.store(&deployment.hash)?;
-        store.analyze(site, entity_name).await
+        store.analyze(site, entity_name)
     }
 
     pub async fn create_manual_index(
@@ -1204,6 +1205,12 @@ impl SubgraphStoreTrait for SubgraphStore {
     async fn least_block_ptr(&self, id: &DeploymentHash) -> Result<Option<BlockPtr>, StoreError> {
         let (store, site) = self.store(id)?;
         store.block_ptr(site.cheap_clone()).await
+    }
+
+    async fn is_healthy(&self, id: &DeploymentHash) -> Result<bool, StoreError> {
+        let (store, site) = self.store(id)?;
+        let health = store.health(&site.deployment).await?;
+        Ok(matches!(health, SubgraphHealth::Healthy))
     }
 
     /// Find the deployment locators for the subgraph with the given hash

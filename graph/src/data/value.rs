@@ -5,40 +5,88 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::iter::FromIterator;
 
-const TOMBSTONE_KEY: &str = "*dead*";
+/// An immutable string that is more memory-efficient since it only has an
+/// overhead of 16 bytes for storing a string vs the 24 bytes that `String`
+/// requires
+#[derive(Clone, Default, Debug, PartialOrd, Ord, PartialEq, Eq)]
+pub struct Word(Box<str>);
+
+impl Word {
+    pub fn as_str(&self) -> &str {
+        &*self.0
+    }
+}
+
+impl std::fmt::Display for Word {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::ops::Deref for Word {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl From<&str> for Word {
+    fn from(s: &str) -> Self {
+        Word(s.into())
+    }
+}
+
+impl From<String> for Word {
+    fn from(s: String) -> Self {
+        Word(s.into_boxed_str())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
-    key: String,
+    key: Option<Word>,
     value: Value,
 }
 
-#[derive(Clone, PartialEq, Default)]
-pub struct Object(Vec<Entry>);
-
-impl Object {
-    pub fn new() -> Self {
-        Self(Vec::new())
+impl Entry {
+    fn new(key: Word, value: Value) -> Self {
+        Entry {
+            key: Some(key),
+            value,
+        }
     }
 
+    fn has_key(&self, key: &str) -> bool {
+        match &self.key {
+            None => false,
+            Some(k) => k.as_str() == key,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Default)]
+pub struct Object(Box<[Entry]>);
+
+impl Object {
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0
             .iter()
-            .find(|entry| entry.key == key)
+            .find(|entry| entry.has_key(key))
             .map(|entry| &entry.value)
     }
 
     pub fn remove(&mut self, key: &str) -> Option<Value> {
         self.0
             .iter_mut()
-            .find(|entry| entry.key == key)
+            .find(|entry| entry.has_key(key))
             .map(|entry| {
-                entry.key = TOMBSTONE_KEY.to_string();
+                entry.key = None;
                 std::mem::replace(&mut entry.value, Value::Null)
             })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
         ObjectIter::new(self)
     }
 
@@ -47,17 +95,9 @@ impl Object {
     }
 
     pub fn extend(&mut self, other: Object) {
-        self.0.extend(other.0)
-    }
-
-    pub fn insert(&mut self, key: String, value: Value) -> Option<Value> {
-        match self.0.iter_mut().find(|entry| entry.key == key) {
-            Some(entry) => Some(std::mem::replace(&mut entry.value, value)),
-            None => {
-                self.0.push(Entry { key, value });
-                None
-            }
-        }
+        let mut entries = std::mem::replace(&mut self.0, Box::new([])).into_vec();
+        entries.extend(other.0.into_vec());
+        self.0 = entries.into_boxed_slice();
     }
 }
 
@@ -65,9 +105,9 @@ impl FromIterator<(String, Value)> for Object {
     fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
         let mut items: Vec<_> = Vec::new();
         for (key, value) in iter {
-            items.push(Entry { key, value })
+            items.push(Entry::new(key.into(), value))
         }
-        Object(items)
+        Object(items.into_boxed_slice())
     }
 }
 
@@ -76,12 +116,12 @@ pub struct ObjectOwningIter {
 }
 
 impl Iterator for ObjectOwningIter {
-    type Item = (String, Value);
+    type Item = (Word, Value);
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(entry) = self.iter.next() {
-            if &entry.key != TOMBSTONE_KEY {
-                return Some((entry.key, entry.value));
+            if let Some(key) = entry.key {
+                return Some((key, entry.value));
             }
         }
         None
@@ -89,13 +129,13 @@ impl Iterator for ObjectOwningIter {
 }
 
 impl IntoIterator for Object {
-    type Item = (String, Value);
+    type Item = (Word, Value);
 
     type IntoIter = ObjectOwningIter;
 
     fn into_iter(self) -> Self::IntoIter {
         ObjectOwningIter {
-            iter: self.0.into_iter(),
+            iter: self.0.into_vec().into_iter(),
         }
     }
 }
@@ -107,17 +147,17 @@ pub struct ObjectIter<'a> {
 impl<'a> ObjectIter<'a> {
     fn new(object: &'a Object) -> Self {
         Self {
-            iter: object.0.as_slice().iter(),
+            iter: object.0.iter(),
         }
     }
 }
 impl<'a> Iterator for ObjectIter<'a> {
-    type Item = (&'a String, &'a Value);
+    type Item = (&'a str, &'a Value);
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(entry) = self.iter.next() {
-            if entry.key != TOMBSTONE_KEY {
-                return Some((&entry.key, &entry.value));
+            if let Some(key) = &entry.key {
+                return Some((key.as_str(), &entry.value));
             }
         }
         None
@@ -142,7 +182,7 @@ impl CacheWeight for Entry {
 
 impl CacheWeight for Object {
     fn indirect_weight(&self) -> usize {
-        self.0.indirect_weight()
+        self.0.iter().map(CacheWeight::indirect_weight).sum()
     }
 }
 
@@ -165,10 +205,10 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn object(map: BTreeMap<String, Value>) -> Self {
+    pub fn object(map: BTreeMap<Word, Value>) -> Self {
         let items = map
             .into_iter()
-            .map(|(key, value)| Entry { key, value })
+            .map(|(key, value)| Entry::new(key, value))
             .collect();
         Value::Object(Object(items))
     }
@@ -320,7 +360,7 @@ impl TryFrom<q::Value> for Value {
                 let mut rmap = BTreeMap::new();
                 for (key, value) in map.into_iter() {
                     let value = Value::try_from(value)?;
-                    rmap.insert(key, value);
+                    rmap.insert(key.into(), value);
                 }
                 Ok(Value::object(rmap))
             }
@@ -343,12 +383,9 @@ impl From<serde_json::Value> for Value {
                 Value::List(vals)
             }
             serde_json::Value::Object(map) => {
-                let mut rmap = Object::new();
-                for (key, value) in map.into_iter() {
-                    let value = Value::from(value);
-                    rmap.insert(key, value);
-                }
-                Value::Object(rmap)
+                let obj =
+                    Object::from_iter(map.into_iter().map(|(key, val)| (key, Value::from(val))));
+                Value::Object(obj)
             }
         }
     }
@@ -371,7 +408,7 @@ impl From<Value> for q::Value {
                 let mut rmap = BTreeMap::new();
                 for (key, value) in map.into_iter() {
                     let value = q::Value::from(value);
-                    rmap.insert(key, value);
+                    rmap.insert(key.to_string(), value);
                 }
                 q::Value::Object(rmap)
             }

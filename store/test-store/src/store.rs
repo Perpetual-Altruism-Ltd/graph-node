@@ -385,15 +385,7 @@ where
 
 /// Run a GraphQL query against the `STORE`
 pub async fn execute_subgraph_query(query: Query, target: QueryTarget) -> QueryResults {
-    execute_subgraph_query_with_complexity(query, target, None).await
-}
-
-pub async fn execute_subgraph_query_with_complexity(
-    query: Query,
-    target: QueryTarget,
-    max_complexity: Option<u64>,
-) -> QueryResults {
-    execute_subgraph_query_internal(query, target, max_complexity, None).await
+    execute_subgraph_query_internal(query, target, None, None).await
 }
 
 pub async fn execute_subgraph_query_with_deadline(
@@ -432,6 +424,7 @@ async fn execute_subgraph_query_internal(
         _ => unreachable!("tests do not use this"),
     };
     let schema = SUBGRAPH_STORE.api_schema(&id).unwrap();
+
     let status = StatusStore::status(
         STORE.as_ref(),
         status::Filter::Deployments(vec![id.to_string()]),
