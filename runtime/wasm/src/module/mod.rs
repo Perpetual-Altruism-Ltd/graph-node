@@ -1195,6 +1195,57 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         }
     }
 
+    //Not sure what else, than what it says on the tin.
+    pub fn notif_send(
+        &mut self,
+        gas: &GasCounter,
+        options_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        google_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        apple_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        webpush_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        http_ptr: AscPtr<Array<AscPtr<AscString>>>,
+        typ_et: u32,
+    ) -> Result<(),HostExportError> {
+        //options order: universe, title, body, custom key, custom data, priority, topic
+
+        fn conv <T,E> (a: Result<T,E>) -> Option<T> {
+            match a {
+                Ok(t) => Some(t),
+                Err(_) => None
+            }
+        }
+        fn cl(a: Option<&String> ) -> Option<String> {
+            match a {
+                Some(t) => {
+                    Some(t.to_owned().clone())
+                }
+                None => {
+                    None
+                }
+            }
+        }
+
+        let options: Vec<String> = asc_get(self, options_ptr, gas)?;
+
+        self.ctx.host_exports.notif_send(
+            u8::try_from(typ_et).map_err(|e| DeterministicHostError::from(Error::from(e)))?,
+            match options.get(0){
+                Some(t) => t.to_owned().clone(),
+                None => {String::from("application")}
+            },
+            conv(asc_get(self, google_ptr, gas)),
+            conv(asc_get(self, apple_ptr, gas)),
+            conv(asc_get(self, webpush_ptr, gas)),
+            conv(asc_get(self, http_ptr, gas)),
+            cl(options.get(1)),
+            cl(options.get(2)),
+            cl(options.get(3)),
+            cl(options.get(4)),
+            cl(options.get(5)),
+            cl(options.get(6)),
+        )
+    }
+
     /// function ipfs.map(link: String, callback: String, flags: String[]): void
     pub fn ipfs_map(
         &mut self,
