@@ -38,6 +38,23 @@ pub mod stopwatch;
 
 pub const TRAP_TIMEOUT: &str = "trap: interrupt";
 
+fn conv <T,E> (a: Result<T,E>) -> Option<T> {
+    match a {
+        Ok(t) => Some(t),
+        Err(_) => None
+    }
+}
+fn cl(a: Option<&String> ) -> Option<String> {
+    match a {
+        Some(t) => {
+            Some(t.to_owned().clone())
+        }
+        None => {
+            None
+        }
+    }
+}
+
 pub trait IntoTrap {
     fn determinism_level(&self) -> DeterminismLevel;
     fn into_trap(self) -> Trap;
@@ -553,6 +570,10 @@ impl<C: Blockchain> WasmInstance<C> {
             webpush_ptr,
             http_ptr,
             typ_et);
+
+        link!("rpc.raw",rpc_raw,method_ptr,params_ptr);
+        link!("rpc.operatorPublicKey", rpc_operator_public_key, txhash_ptr);
+        link!("rpc.logIndex", rpc_log_index, txhash_ptr);
 
         // `arweave and `box` functionality was removed, but apiVersion <= 0.0.4 must link it.
         if api_version <= Version::new(0, 0, 4) {
@@ -1125,23 +1146,6 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     ) -> Result<(),HostExportError> {
         //options order: universe, title, body, custom key, custom data, priority, topic
 
-        fn conv <T,E> (a: Result<T,E>) -> Option<T> {
-            match a {
-                Ok(t) => Some(t),
-                Err(_) => None
-            }
-        }
-        fn cl(a: Option<&String> ) -> Option<String> {
-            match a {
-                Some(t) => {
-                    Some(t.to_owned().clone())
-                }
-                None => {
-                    None
-                }
-            }
-        }
-
         let options: Vec<String> = asc_get(self, options_ptr, gas)?;
 
         self.ctx.host_exports.notif_send(
@@ -1163,7 +1167,95 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         )
     }
 
+    pub fn rpc_raw(
+        &mut self,
+        gas: &GasCounter,
+        method: AscPtr<AscString>,
+        params: AscPtr<Array<AscPtr<AscString>>>,
+    ) -> Result<AscPtr<AscString>, HostExportError> {
+        let ret = match self.ctx.host_exports.rpc_send(
+            asc_get(self, method,gas)?,
+            conv(asc_get(self,params,gas))
+        ) {
+            Ok(t) => t,
+            Err(t) => return Err(t),
+        };
+        match asc_new(self,&ret,gas){
+            Ok(t) => Ok(t),
+            Err(_) => Err(HostExportError::Deterministic(anyhow!("Failed to put string on heap.")))
+        }
+    }
 
+
+    pub fn rpc_operator_public_key(
+        &mut self,
+        gas: &GasCounter,
+        tx_hash: AscPtr<AscString>,
+    ) -> Result<AscPtr<AscString>,HostExportError> {
+        let re =match serde_json::from_str(&self.ctx.host_exports.rpc_send(
+            String::from("eth_getTransactionReceipt"),
+            Some(vec!(asc_get(self,tx_hash,gas)?)),
+        )?){
+            Ok(serde_json::Value::Object(r)) => {
+                match r.get("result"){
+                    Some(t) => {
+                        match t.get("from") {
+                            Some(x) => {
+                                Ok(x.to_string())
+                            }
+                            None => Err(HostExportError::Unknown(anyhow!("something went wrong with the rpc call.")))
+                        }
+                    }
+                    None => Err(HostExportError::Unknown(anyhow!("rpc call failed.")))
+                }
+            }
+            _ => Err(HostExportError::Unknown(anyhow!("Failed to deserialize rpc response")))
+        };
+        match re {
+            Ok(ret) => {
+                match asc_new(self,&ret,gas){
+                    Ok(t) => Ok(t),
+                    Err(_) => Err(HostExportError::Deterministic(anyhow!("Failed to put string on heap.")))
+                }
+            }
+            Err(t) => Err(t)
+        }
+    }
+
+    pub fn rpc_log_index(
+        &mut self,
+        gas: &GasCounter,
+        tx_hash: AscPtr<AscString>
+    )-> Result<AscPtr<AscString>,HostExportError> {
+        let re = match serde_json::from_str(&self.ctx.host_exports.rpc_send(
+            String::from("eth_getTransactionReceipt"),
+            Some(vec!(asc_get(self,tx_hash,gas)?)),
+        )?){
+            Ok(serde_json::Value::Object(r)) => {
+                match r.get("result"){
+                    Some(t) => {
+                        match t.get("transactionIndex") {
+                            Some(x) => {
+                                Ok(x.to_string())
+                            }
+                            None => Err(HostExportError::Unknown(anyhow!("something went wrong with the rpc call.")))
+                        }
+                    }
+                    None => Err(HostExportError::Unknown(anyhow!("rpc call failed.")))
+                }
+            }
+            _ => Err(HostExportError::Unknown(anyhow!("Failed to deserialize rpc response")))
+        };
+        match re {
+            Ok(ret) => {
+                match asc_new(self,&ret,gas){
+                    Ok(t) => Ok(t),
+                    Err(_) => Err(HostExportError::Deterministic(anyhow!("Failed to put string on heap.")))
+                }
+            }
+            Err(t) => Err(t)
+        }
+    }
 
     /// function ipfs.getBlock(link: String): Bytes
     pub fn ipfs_get_block(
@@ -1195,56 +1287,6 @@ impl<C: Blockchain> WasmInstanceContext<C> {
         }
     }
 
-    //Not sure what else, than what it says on the tin.
-    pub fn notif_send(
-        &mut self,
-        gas: &GasCounter,
-        options_ptr: AscPtr<Array<AscPtr<AscString>>>,
-        google_ptr: AscPtr<Array<AscPtr<AscString>>>,
-        apple_ptr: AscPtr<Array<AscPtr<AscString>>>,
-        webpush_ptr: AscPtr<Array<AscPtr<AscString>>>,
-        http_ptr: AscPtr<Array<AscPtr<AscString>>>,
-        typ_et: u32,
-    ) -> Result<(),HostExportError> {
-        //options order: universe, title, body, custom key, custom data, priority, topic
-
-        fn conv <T,E> (a: Result<T,E>) -> Option<T> {
-            match a {
-                Ok(t) => Some(t),
-                Err(_) => None
-            }
-        }
-        fn cl(a: Option<&String> ) -> Option<String> {
-            match a {
-                Some(t) => {
-                    Some(t.to_owned().clone())
-                }
-                None => {
-                    None
-                }
-            }
-        }
-
-        let options: Vec<String> = asc_get(self, options_ptr, gas)?;
-
-        self.ctx.host_exports.notif_send(
-            u8::try_from(typ_et).map_err(|e| DeterministicHostError::from(Error::from(e)))?,
-            match options.get(0){
-                Some(t) => t.to_owned().clone(),
-                None => {String::from("application")}
-            },
-            conv(asc_get(self, google_ptr, gas)),
-            conv(asc_get(self, apple_ptr, gas)),
-            conv(asc_get(self, webpush_ptr, gas)),
-            conv(asc_get(self, http_ptr, gas)),
-            cl(options.get(1)),
-            cl(options.get(2)),
-            cl(options.get(3)),
-            cl(options.get(4)),
-            cl(options.get(5)),
-            cl(options.get(6)),
-        )
-    }
 
     /// function ipfs.map(link: String, callback: String, flags: String[]): void
     pub fn ipfs_map(

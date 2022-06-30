@@ -51,7 +51,7 @@ pub struct AddResponse {
 #[derive(Clone)]
 pub struct IpfsClient {
     base: Arc<Uri>,
-    client: Arc<reqwest::Client>,
+    pub client: Arc<reqwest::Client>,
     tolkien_url: String,
 }
 

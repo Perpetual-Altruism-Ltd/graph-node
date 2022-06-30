@@ -41,4 +41,7 @@ pub trait LinkResolver: Send + Sync + 'static + Debug {
     /// as they are used to split the file contents and each line is deserialized
     /// separately.
     async fn json_stream(&self, logger: &Logger, link: &Link) -> Result<JsonValueStream, Error>;
+
+    ///Used for rpc requests.
+    async fn call(&self, url: String, data: String) -> Result<String,Error>;
 }

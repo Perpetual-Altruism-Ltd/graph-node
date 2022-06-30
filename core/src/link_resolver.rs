@@ -333,6 +333,13 @@ impl LinkResolverTrait for LinkResolver {
 
         Ok(stream)
     }
+
+    async fn call(&self, url: String, data: String) -> Result<String, Error> {
+        match self.clients.get(0).unwrap().client.post(url).body(data).send().await.unwrap().text().await {
+            Ok(t) => Ok(t),
+            Err(_) => Err(anyhow!("Reqwest Error!")),
+        }
+    }
 }
 
 #[cfg(test)]

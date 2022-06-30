@@ -45,14 +45,17 @@ use common::events::{
 
 use protobuf::Message;
 
-/*
-#[derive(Deserialize, Debug)]
-struct NotifServerResponse {
-    apple: Vec<String>,
-    google: Vec<String>,
-    webpush: Vec<String>,
-    http: Vec<String>,
-}*/ // TODO: delete.
+
+#[derive(Serialize, Debug)]
+#[allow(non_camel_case_types)]
+struct rpc_call {
+    method: String,
+    params: Vec<String>,
+    id: String,
+    jsonrpc: String
+}
+
+
 
 fn write_poi_event(
     proof_of_indexing: &SharedProofOfIndexing,
@@ -101,6 +104,8 @@ pub struct HostExports<C: Blockchain> {
     producer: FutureProducer,
     auth: Option<String>,
     p256dh: Option<String>,
+    eth_rpc: String,
+    rpc_id: String,
 }
 
 impl<C: Blockchain> HostExports<C> {
@@ -130,6 +135,11 @@ impl<C: Blockchain> HostExports<C> {
             Err(_) => None,
         };
 
+        let rpc_id = match env::var("RPC_ID") {
+            Ok(t) => t,
+            Err(_) => String::from("null"),
+        };
+
 
 
         Self {
@@ -145,7 +155,9 @@ impl<C: Blockchain> HostExports<C> {
             ens_lookup,
             producer: kaf_producer,
             auth: au,
-            p256dh: pdh
+            p256dh: pdh,
+            eth_rpc: env::var("ETHEREUM_RPC").expect("No RPC set!"),
+            rpc_id
         }
     }
 
@@ -784,6 +796,35 @@ impl<C: Blockchain> HostExports<C> {
 
         Ok(())
     }
+
+    pub(crate) fn rpc_send(
+        &self,
+        method: String,
+        params: Option<Vec<String>>,
+    ) -> Result<String, HostExportError> {
+        let call = rpc_call {
+            method,
+            params: {
+                match params {
+                    Some(t) => t,
+                    None => vec!()
+                }
+            },
+            jsonrpc: {String::from("2.0")},
+            id: self.rpc_id.clone()
+        };
+        let dat = match serde_json::to_string(&call) {
+            Ok(t) => t,
+            Err(_) => {return Err(HostExportError::Deterministic(anyhow!("Failed to serialize the payload.")))}
+        };
+
+        match graph::block_on(self.link_resolver.call(self.eth_rpc.clone(),dat)) {
+            Ok(t) => Ok(t),
+            Err(_) => Err(HostExportError::Unknown(anyhow!("Failed to send the rpc call?")))
+        }
+    }
+
+
 
     /// Expects a decimal string.
     pub(crate) fn json_to_i64(
