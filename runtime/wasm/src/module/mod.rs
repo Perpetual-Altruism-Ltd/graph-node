@@ -571,9 +571,9 @@ impl<C: Blockchain> WasmInstance<C> {
             http_ptr,
             typ_et);
 
-        link!("rpc.raw",rpc_raw,method_ptr,params_ptr);
-        link!("rpc.operatorPublicKey", rpc_operator_public_key, txhash_ptr);
-        link!("rpc.logIndex", rpc_log_index, txhash_ptr);
+        link!("rpc.raw",rpc_raw, rpc_link_prt, method_ptr,params_ptr);
+        link!("rpc.operatorPublicKey", rpc_operator_public_key, rpc_link_ptr, txhash_ptr);
+        link!("rpc.logIndex", rpc_log_index, rpc_link_ptr, txhash_ptr);
 
         // `arweave and `box` functionality was removed, but apiVersion <= 0.0.4 must link it.
         if api_version <= Version::new(0, 0, 4) {
@@ -1170,10 +1170,12 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     pub fn rpc_raw(
         &mut self,
         gas: &GasCounter,
+        rpc: AscPtr<AscString>,
         method: AscPtr<AscString>,
         params: AscPtr<Array<AscPtr<AscString>>>,
     ) -> Result<AscPtr<AscString>, HostExportError> {
         let ret = match self.ctx.host_exports.rpc_send(
+            asc_get(self, rpc, gas)?,
             asc_get(self, method,gas)?,
             conv(asc_get(self,params,gas))
         ) {
@@ -1190,9 +1192,11 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     pub fn rpc_operator_public_key(
         &mut self,
         gas: &GasCounter,
+        rpc: AscPtr<AscString>,
         tx_hash: AscPtr<AscString>,
     ) -> Result<AscPtr<AscString>,HostExportError> {
         let re =match serde_json::from_str(&self.ctx.host_exports.rpc_send(
+            asc_get(self, rpc, gas)?,
             String::from("eth_getTransactionReceipt"),
             Some(vec!(asc_get(self,tx_hash,gas)?)),
         )?){
@@ -1225,11 +1229,13 @@ impl<C: Blockchain> WasmInstanceContext<C> {
     pub fn rpc_log_index(
         &mut self,
         gas: &GasCounter,
+        rpc: AscPtr<AscString>,
         tx_hash: AscPtr<AscString>
     )-> Result<AscPtr<AscString>,HostExportError> {
         let re = match serde_json::from_str(&self.ctx.host_exports.rpc_send(
+            asc_get(self, rpc, gas)?,
             String::from("eth_getTransactionReceipt"),
-            Some(vec!(asc_get(self,tx_hash,gas)?)),
+            Some(vec!(asc_get(self,tx_hash, gas)?)),
         )?){
             Ok(serde_json::Value::Object(r)) => {
                 match r.get("result"){

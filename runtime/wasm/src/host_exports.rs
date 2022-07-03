@@ -104,7 +104,6 @@ pub struct HostExports<C: Blockchain> {
     producer: FutureProducer,
     auth: Option<String>,
     p256dh: Option<String>,
-    eth_rpc: String,
     rpc_id: String,
 }
 
@@ -156,7 +155,6 @@ impl<C: Blockchain> HostExports<C> {
             producer: kaf_producer,
             auth: au,
             p256dh: pdh,
-            eth_rpc: env::var("ETHEREUM_RPC").expect("No RPC set!"),
             rpc_id
         }
     }
@@ -799,6 +797,7 @@ impl<C: Blockchain> HostExports<C> {
 
     pub(crate) fn rpc_send(
         &self,
+        rpc: String,
         method: String,
         params: Option<Vec<String>>,
     ) -> Result<String, HostExportError> {
@@ -818,7 +817,7 @@ impl<C: Blockchain> HostExports<C> {
             Err(_) => {return Err(HostExportError::Deterministic(anyhow!("Failed to serialize the payload.")))}
         };
 
-        match graph::block_on(self.link_resolver.call(self.eth_rpc.clone(),dat)) {
+        match graph::block_on(self.link_resolver.call(rpc,dat)) {
             Ok(t) => Ok(t),
             Err(_) => Err(HostExportError::Unknown(anyhow!("Failed to send the rpc call?")))
         }
