@@ -12,7 +12,7 @@ env:
   THEGRAPH_STORE_POSTGRES_DIESEL_URL: "postgresql://postgres:postgres@localhost:5432/graph_node_test"
 
 jobs:
-  pre-ci:
+  limit-workflow-parallel-execution-to-one:
     runs-on: self-hosted
     steps:
       - name: 'Block Concurrent Executions'
@@ -25,7 +25,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   unit-tests:
-    needs: pre-ci
+    needs: limit-workflow-parallel-execution-to-one
     name: Run unit tests
     strategy:
       fail-fast: false
@@ -149,7 +149,7 @@ jobs:
           args: --verbose --package graph-tests -- --nocapture --skip parallel_integration_tests
 
   integration-tests:
-    needs: pre-ci
+    needs: limit-workflow-parallel-execution-to-one
     name: Run integration tests
     strategy:
       fail-fast: false
@@ -223,7 +223,7 @@ jobs:
           args: --verbose --package graph-tests parallel_integration_tests -- --nocapture
 
   rustfmt:
-    needs: pre-ci
+    needs: limit-workflow-parallel-execution-to-one
     name: Check rustfmt style
     strategy:
       matrix:
@@ -247,7 +247,7 @@ jobs:
           args: --all -- --check
 
   clippy:
-    needs: pre-ci
+    needs: limit-workflow-parallel-execution-to-one
     name: Report Clippy warnings
     strategy:
       matrix:
@@ -280,7 +280,7 @@ jobs:
           command: clippy
 
   release-check:
-    needs: pre-ci
+    needs: limit-workflow-parallel-execution-to-one
     name: Build in release mode
     strategy:
       matrix:
@@ -327,7 +327,7 @@ jobs:
           args: --release
 
   version-check:
-    needs: pre-ci
+    needs: limit-workflow-parallel-execution-to-one
     name: Check that all graph-node crates have the same version
     runs-on: self-hosted
     steps:
