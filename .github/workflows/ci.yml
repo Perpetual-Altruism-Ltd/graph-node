@@ -68,8 +68,14 @@ jobs:
           toolchain: ${{ matrix.rust }}
           override: true
 
-      - name: Install lld
-        run: sudo apt-get install -y lld libpq-dev pkg-config libssl-dev cmake clang
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y curl
+          curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+          echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+          sudo apt update
+          sudo apt install -y yarn lld libpq-dev pkg-config libssl-dev cmake clang
 
       - name: Run unit tests
         uses: actions-rs/cargo@v1
@@ -123,8 +129,15 @@ jobs:
           toolchain: ${{ matrix.rust }}
           override: true
 
-      - name: Install lld
-        run: sudo apt-get install -y lld libpq-dev pkg-config libssl-dev cmake clang
+      - name: Install dependencies
+        run: 
+          sudo apt update
+          sudo apt install -y curl
+          curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+          echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+          sudo apt update
+          sudo apt install -y yarn lld libpq-dev pkg-config libssl-dev cmake clang
+          
       - name: Run runner tests
         id: runner-tests-1
         uses: actions-rs/cargo@v1
@@ -167,8 +180,14 @@ jobs:
           toolchain: ${{ matrix.rust }}
           override: true
 
-      - name: Install lld and jq
-        run: sudo apt-get install -y lld jq libpq-dev pkg-config libssl-dev cmake clang
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y curl
+          curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+          echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+          sudo apt update
+          sudo apt install -y yarn lld libpq-dev pkg-config libssl-dev cmake clang
 
       - name: Build graph-node
         env:
@@ -280,8 +299,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get -y install libpq-dev pkg-config libssl-dev cmake clang
+          sudo apt update
+          sudo apt install -y curl
+          curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+          echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+          sudo apt update
+          sudo apt install -y yarn lld libpq-dev pkg-config libssl-dev cmake clang
 
       - name: Cargo check (debug)
         uses: actions-rs/cargo@v1
