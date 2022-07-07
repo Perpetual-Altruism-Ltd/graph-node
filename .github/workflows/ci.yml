@@ -282,7 +282,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get -y install libpq-dev
+          sudo apt-get -y install libpq-dev pkg-config libssl-dev
 
       - name: Cargo check (debug)
         uses: actions-rs/cargo@v1
