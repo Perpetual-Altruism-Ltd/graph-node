@@ -14,12 +14,11 @@ env:
 jobs:
   pre-ci:
     runs-on: self-hosted
-    timeout-minutes: 1
     steps:
       - name: 'Block Concurrent Executions'
         uses: softprops/turnstyle@v1
         with:
-          poll-interval-seconds: 60
+          poll-interval-seconds: 5
           abort-after-seconds: 36000
           same-branch-only: false
         env:
