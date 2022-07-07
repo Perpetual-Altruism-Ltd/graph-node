@@ -1,4 +1,4 @@
-name: Pull from PA thegraph public repo into private repo
+name: PR from PA thegraph private repo into public repo
 
 on: 
   workflow_dispatch:
