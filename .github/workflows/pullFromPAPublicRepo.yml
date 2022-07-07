@@ -30,7 +30,7 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v2
         with:
-          path: privateRepo   
+          path: privateRepo
 
       - name: Get back latest state from Perpetual-Altruism-Ltd/graph-node, branch ${{ github.event.inputs.branch }}
         env:

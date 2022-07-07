@@ -32,10 +32,11 @@ jobs:
         with:
           path: publicRepo
           repository: Perpetual-Altruism-Ltd/graph-node
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Get back latest state from Perpetual-Altruism-Ltd/graph-node-mynft, branch ${{ github.event.inputs.branch }}, create branch, and push
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           cd publicRepo
           git checkout ${{ github.event.inputs.branch }}
