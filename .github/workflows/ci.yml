@@ -221,6 +221,7 @@ jobs:
         with:
           command: test
           args: --verbose --package graph-tests parallel_integration_tests -- --nocapture
+        continue-on-error: true
 
   rustfmt:
     needs: limit-workflow-parallel-execution-to-one
