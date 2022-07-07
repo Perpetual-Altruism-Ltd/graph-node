@@ -24,6 +24,9 @@ jobs:
           sudo apt update
           sudo apt install -y gh
 
+      - name: Cleanup
+        run: rm -rf privateRepo
+
       - name: Checkout sources
         uses: actions/checkout@v2
         with:
@@ -33,6 +36,7 @@ jobs:
         run: |
           cd privateRepo
           git checkout ${{ github.event.inputs.branch }}
+          git remote rm public
           git remote add public https://github.com/Perpetual-Altruism-Ltd/graph-node.git
           git fetch public
           git checkout -b ${{ github.event.inputs.branch }}-pullFromPublic public/${{ github.event.inputs.branch }}
