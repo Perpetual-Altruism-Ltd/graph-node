@@ -1,12 +1,12 @@
 name: Pull from PA thegraph public repo
 
-on: [workflow_dispatch]
-#  workflow_dispatch:
-#    inputs:
-#      branch:
-#        description: 'Branch to pull from Perpetual-Altruism-Ltd/graph-node'
-#        required: true
-#        default: 'master'
+on: 
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to pull from Perpetual-Altruism-Ltd/graph-node'
+        required: true
+        default: 'master'
 
 
 jobs:
