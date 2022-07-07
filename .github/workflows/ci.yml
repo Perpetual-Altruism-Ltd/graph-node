@@ -13,7 +13,7 @@ env:
 
 jobs:
   limit-workflow-parallel-execution-to-one:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: 'Block Concurrent Executions'
         uses: softprops/turnstyle@v1
@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["stable"]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     services:
       ipfs:
         image: ipfs/go-ipfs:v0.10.0
@@ -92,7 +92,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["stable"]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     services:
       ipfs:
         image: ipfs/go-ipfs:v0.10.0
@@ -155,7 +155,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["stable"]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout sources
@@ -229,7 +229,7 @@ jobs:
     strategy:
       matrix:
         rust: ["stable"]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -253,7 +253,7 @@ jobs:
     strategy:
       matrix:
         rust: ["stable"]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -286,7 +286,7 @@ jobs:
     strategy:
       matrix:
         rust: ["stable"]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -330,7 +330,7 @@ jobs:
   version-check:
     needs: limit-workflow-parallel-execution-to-one
     name: Check that all graph-node crates have the same version
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - name: Checks through all Cargo.toml files, making sure their version is unique
