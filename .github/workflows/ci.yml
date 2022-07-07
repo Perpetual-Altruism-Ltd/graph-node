@@ -12,7 +12,19 @@ env:
   THEGRAPH_STORE_POSTGRES_DIESEL_URL: "postgresql://postgres:postgres@localhost:5432/graph_node_test"
 
 jobs:
+  pre-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: 'Block Concurrent Executions'
+        uses: softprops/turnstyle@v1
+        with:
+          poll-interval-seconds: 10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   unit-tests:
+    needs: pre-ci
     name: Run unit tests
     strategy:
       fail-fast: false
@@ -67,6 +79,7 @@ jobs:
           args: --verbose --workspace --exclude graph-tests -- --nocapture
 
   runner-tests:
+    needs: unit-tests
     name: Subgraph Runner integration tests
     strategy:
       fail-fast: false
