@@ -19,7 +19,8 @@ jobs:
       - name: 'Block Concurrent Executions'
         uses: softprops/turnstyle@v1
         with:
-          poll-interval-seconds: 10
+          poll-interval-seconds: 3
+          same-branch-only: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
