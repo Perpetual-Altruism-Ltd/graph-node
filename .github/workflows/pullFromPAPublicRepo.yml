@@ -1,0 +1,40 @@
+name: Pull from PA thegraph public repo
+
+on: 
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to pull from Perpetual-Altruism-Ltd/graph-node'
+        required: true
+        default: 'master'
+
+
+jobs:
+  createBranchAndPR:
+    runs-on: self-hosted
+    steps:
+
+      - name: Install Github CLI
+      - run: |
+          sudo apt update
+          sudo apt install -y curl
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install -y gh
+
+      - name: Checkout sources
+        uses: actions/checkout@v2
+        with:
+          path: privateRepo   
+
+      - name: Get back latest state from Perpetual-Altruism-Ltd/graph-node, branch ${{ inputs.branch }}
+        run: |
+          cd privateRepo
+          git checkout ${{ inputs.branch }}
+          git checkout -b ${{ inputs.branch }}/pullFromPublic
+          git remote add public https://github.com/Perpetual-Altruism-Ltd/graph-node.git
+          git pull public ${{ inputs.branch }}
+          git push origin ${{ inputs.branch }}/pullFromPublic
+          gh pr create --base ${{ inputs.branch }} --title "PR to merge upstream code from Perpetual-Altruism-Ltd/graph-node, branch ${{ inputs.branch }}"
