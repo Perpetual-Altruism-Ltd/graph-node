@@ -69,7 +69,7 @@ jobs:
           override: true
 
       - name: Install lld
-        run: sudo apt-get install -y lld libpq-dev pkg-config libssl-dev
+        run: sudo apt-get install -y lld libpq-dev pkg-config libssl-dev cmake clang
 
       - name: Run unit tests
         uses: actions-rs/cargo@v1
@@ -124,7 +124,7 @@ jobs:
           override: true
 
       - name: Install lld
-        run: sudo apt-get install -y lld libpq-dev pkg-config libssl-dev
+        run: sudo apt-get install -y lld libpq-dev pkg-config libssl-dev cmake clang
       - name: Run runner tests
         id: runner-tests-1
         uses: actions-rs/cargo@v1
@@ -168,7 +168,7 @@ jobs:
           override: true
 
       - name: Install lld and jq
-        run: sudo apt-get install -y lld jq libpq-dev pkg-config libssl-dev
+        run: sudo apt-get install -y lld jq libpq-dev pkg-config libssl-dev cmake clang
 
       - name: Build graph-node
         env:
@@ -281,7 +281,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get -y install libpq-dev pkg-config libssl-dev
+          sudo apt-get -y install libpq-dev pkg-config libssl-dev cmake clang
 
       - name: Cargo check (debug)
         uses: actions-rs/cargo@v1
