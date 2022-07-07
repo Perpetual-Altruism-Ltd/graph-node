@@ -13,7 +13,7 @@ env:
 
 jobs:
   pre-ci:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 1
     steps:
       - name: 'Block Concurrent Executions'
