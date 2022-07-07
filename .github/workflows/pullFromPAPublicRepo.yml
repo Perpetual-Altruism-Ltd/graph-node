@@ -1,4 +1,4 @@
-name: Pull from PA thegraph public repo
+name: Pull from PA thegraph public repo into private repo
 
 on: 
   workflow_dispatch:
@@ -42,4 +42,4 @@ jobs:
           git fetch public
           git checkout -b ${{ github.event.inputs.branch }}-pullFromPublic public/${{ github.event.inputs.branch }}
           git push origin ${{ github.event.inputs.branch }}-pullFromPublic
-          gh pr create --base ${{ github.event.inputs.branch }} --head ${{ github.event.inputs.branch }}-pullFromPublic --title "PR to merge upstream code from Perpetual-Altruism-Ltd/graph-node, branch ${{ github.event.inputs.branch }}" --body "..."
+          gh pr create --base ${{ github.event.inputs.branch }} --head ${{ github.event.inputs.branch }}-pullFromPublic --title "PR to merge upstream code from Perpetual-Altruism-Ltd/graph-node (public), branch ${{ github.event.inputs.branch }} into Perpetual-Altruism-Ltd/graph-node-mynft (private), branch ${{ github.event.inputs.branch }}" --body "..."
