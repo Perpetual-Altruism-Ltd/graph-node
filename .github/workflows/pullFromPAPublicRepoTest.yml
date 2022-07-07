@@ -39,5 +39,5 @@ jobs:
           git remote add public https://github.com/Perpetual-Altruism-Ltd/graph-node.git
           git fetch public
           git checkout -b ${{ github.event.inputs.branch }}-pullFromPublic public/${{ github.event.inputs.branch }}
-          git push origin ${{ github.event.inputs.branch }}/pullFromPublic
+          git push origin ${{ github.event.inputs.branch }}-pullFromPublic
           gh pr create --base ${{ github.event.inputs.branch }} --title "PR to merge upstream code from Perpetual-Altruism-Ltd/graph-node, branch ${{ github.event.inputs.branch }}"
