@@ -19,7 +19,7 @@ jobs:
       - name: 'Block Concurrent Executions'
         uses: softprops/turnstyle@v1
         with:
-          poll-interval-seconds: 15
+          poll-interval-seconds: 60
           abort-after-seconds: 36000
           same-branch-only: false
         env:
