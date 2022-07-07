@@ -2,7 +2,7 @@ name: Continuous Integration
 
 on:
   push:
-    branches: [master]
+    branches: [master-mynft]
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["stable"]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     services:
       ipfs:
         image: ipfs/go-ipfs:v0.10.0
@@ -72,7 +72,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["stable"]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     services:
       ipfs:
         image: ipfs/go-ipfs:v0.10.0
@@ -128,7 +128,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["stable"]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout sources
@@ -194,7 +194,7 @@ jobs:
     strategy:
       matrix:
         rust: ["stable"]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -217,7 +217,7 @@ jobs:
     strategy:
       matrix:
         rust: ["stable"]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -249,7 +249,7 @@ jobs:
     strategy:
       matrix:
         rust: ["stable"]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -288,7 +288,7 @@ jobs:
 
   version-check:
     name: Check that all graph-node crates have the same version
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v2
       - name: Checks through all Cargo.toml files, making sure their version is unique
