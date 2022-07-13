@@ -47,7 +47,7 @@ tokio-stream = { version = "0.1.9", features = ["sync"] }
 tokio-retry = "0.3.0"
 url = "2.2.1"
 prometheus = "0.13.1"
-priority-queue = "0.7.0"
+priority-queue = "1.0.4"
 tonic = { version = "0.7.1", features = ["tls-roots"] }
 prost = "0.10.4"
 prost-types = "0.10.1"
